@@ -54,6 +54,9 @@ public class CalciteTrinoUDFMap {
     createUDFMapEntry(UDF_MAP, hiveToCalciteOp("get_json_object"), 2, "json_extract");
 
     // map various hive functions
+    createUDFMapEntry(UDF_MAP, hiveToCalciteOp("pmod"), 2, "mod",
+        "[{\"op\":\"+\",\"operands\":[{\"op\":\"%\",\"operands\":[{\"input\":1},{\"input\":2}]},{\"input\":2}]},{\"input\":2}]",
+        null);
     createUDFMapEntry(UDF_MAP, hiveToCalciteOp("base64"), 1, "to_base64");
     createUDFMapEntry(UDF_MAP, hiveToCalciteOp("unbase64"), 1, "from_base64");
     createUDFMapEntry(UDF_MAP, hiveToCalciteOp("hex"), 1, "to_hex");
@@ -64,6 +67,19 @@ public class CalciteTrinoUDFMap {
     createUDFMapEntry(UDF_MAP, hiveToCalciteOp("instr"), 2, "strpos");
     createRuntimeUDFMapEntry(UDF_MAP, hiveToCalciteOp("decode"), 2,
         "[{\"regex\":\"(?i)('utf-8')\", \"input\":2, \"name\":\"from_utf8\"}]", "[{\"input\":1}]", null);
+
+    createUDFMapEntry(UDF_MAP, hiveToCalciteOp("to_date"), 1, "date",
+        "[{\"op\": \"timestamp\", \"operands\":[{\"input\": 1}]}]", null);
+    createUDFMapEntry(UDF_MAP, hiveToCalciteOp("date_add"), 2, "date_add", "[{\"value\": 'day'}, {\"input\": 2},  "
+        + "{\"op\": \"date\", \"operands\":[{\"op\": \"timestamp\", \"operands\":[{\"input\": 1}]}]}]", null);
+    createUDFMapEntry(UDF_MAP, hiveToCalciteOp("date_sub"), 2, "date_add",
+        "[{\"value\": 'day'}, " + "{\"op\": \"*\", \"operands\":[{\"input\": 2}, {\"value\": -1}]}, "
+            + "{\"op\": \"date\", \"operands\":[{\"op\": \"timestamp\", \"operands\":[{\"input\": 1}]}]}]",
+        null);
+    createUDFMapEntry(UDF_MAP, hiveToCalciteOp("datediff"), 2, "date_diff",
+        "[{\"value\": 'day'}, {\"op\": \"date\", \"operands\":[{\"op\": \"timestamp\", \"operands\":[{\"input\": 2}]}]}, "
+            + "{\"op\": \"date\", \"operands\":[{\"op\": \"timestamp\", \"operands\":[{\"input\": 1}]}]}]",
+        null);
 
     // DALI functions
     // Most "com.linkedin..." UDFs follow convention of having UDF names mapped from their class name by converting

@@ -282,6 +282,8 @@ public class TestUtils {
 
     run(driver, "CREATE VIEW IF NOT EXISTS test.current_date_and_timestamp_view AS \n"
         + "SELECT CURRENT_TIMESTAMP, trim(cast(CURRENT_TIMESTAMP as string)) as ct, CURRENT_DATE, CURRENT_DATE as cd, a from test.tableA");
+    run(driver,
+        "CREATE VIEW IF NOT EXISTS test.date_function_view AS \n" + "SELECT date('2021-01-02') as a from test.tableA");
     run(driver, "CREATE VIEW IF NOT EXISTS test.lateral_view_json_tuple_view AS \n"
         + "SELECT a, d, e, f FROM test.tableA LATERAL VIEW json_tuple(b.b1, 'trino', 'always', 'rocks') jt AS d, e, f");
     run(driver, "CREATE VIEW IF NOT EXISTS test.lateral_view_json_tuple_view_qualified AS \n"
@@ -304,6 +306,13 @@ public class TestUtils {
             + "from_utc_timestamp(a_decimal_zero, 'America/Los_Angeles'), "
             + "from_utc_timestamp(a_timestamp, 'America/Los_Angeles'), "
             + "from_utc_timestamp(a_date, 'America/Los_Angeles')" + "FROM test.table_from_utc_timestamp");
+    run(driver, "CREATE VIEW IF NOT EXISTS test.date_add_view AS \n" + "SELECT to_date('2021-08-20'), "
+        + "to_date('2021-08-20 00:00:00'), " + "date_add('2021-08-20', 1), " + "date_add('2021-08-20 00:00:00', 1), "
+        + "date_sub('2021-08-20', 1), " + "date_sub('2021-08-20 00:00:00', 1), "
+        + "datediff('2021-08-20', '2021-08-21'), " + "datediff('2021-08-20', '2021-08-19'), "
+        + "datediff('2021-08-20 00:00:00', '2021-08-19 23:59:59')" + "FROM test.tableA");
+
+    run(driver, "CREATE VIEW IF NOT EXISTS test.pmod_view AS \n" + "SELECT pmod(-9, 4) FROM test.tableA");
   }
 
   public static RelNode convertView(String db, String view) {

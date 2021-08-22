@@ -121,6 +121,7 @@ public class StaticHiveFunctionRegistry implements HiveFunctionRegistry {
 
     // mathematical functions
     // we need to define new strategy for hive to allow null operands by default for everything
+    createAddUserDefinedFunction("pmod", HiveReturnTypes.BIGINT, NUMERIC_NUMERIC);
     createAddUserDefinedFunction("round", DOUBLE_NULLABLE,
         family(ImmutableList.of(SqlTypeFamily.NUMERIC, SqlTypeFamily.INTEGER), optionalOrd(1)));
     createAddUserDefinedFunction("bround", DOUBLE_NULLABLE,
@@ -267,6 +268,7 @@ public class StaticHiveFunctionRegistry implements HiveFunctionRegistry {
     createAddUserDefinedFunction("unix_timestamp", BIGINT,
         family(ImmutableList.of(SqlTypeFamily.STRING, SqlTypeFamily.STRING), optionalOrd(ImmutableList.of(0, 1))));
     createAddUserDefinedFunction("to_date", HiveReturnTypes.STRING, or(STRING, DATETIME));
+    createAddUserDefinedFunction("date", DATE, or(STRING, DATETIME));
     createAddUserDefinedFunction("year", ReturnTypes.INTEGER, STRING);
     createAddUserDefinedFunction("quarter", ReturnTypes.INTEGER, STRING);
     createAddUserDefinedFunction("month", ReturnTypes.INTEGER, STRING);

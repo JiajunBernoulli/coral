@@ -16,7 +16,7 @@ import org.testng.annotations.Test;
 
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
-import static org.assertj.core.api.Assertions.assertThat;
+import static org.testng.Assert.assertEquals;
 
 
 public class HiveToTrinoConverterTest {
@@ -40,7 +40,7 @@ public class HiveToTrinoConverterTest {
     RelNode relNode = TestUtils.convertView(database, view);
     RelToTrinoConverter relToTrinoConverter = new RelToTrinoConverter();
     String expandedSql = relToTrinoConverter.convert(relNode);
-    assertThat(expandedSql).isEqualTo(expectedSql);
+    assertEquals(expandedSql, expectedSql);
   }
 
   @DataProvider(name = "viewTestCases")
@@ -124,6 +124,8 @@ public class HiveToTrinoConverterTest {
 
         { "test", "current_date_and_timestamp_view", "SELECT CURRENT_TIMESTAMP, TRIM(CAST(CURRENT_TIMESTAMP AS VARCHAR(65535))) AS \"ct\", CURRENT_DATE, CURRENT_DATE AS \"cd\", \"a\"\nFROM \"test\".\"tablea\"" },
 
+        { "test", "date_function_view", "SELECT \"date\"('2021-01-02') AS \"a\"\n" + "FROM \"test\".\"tablea\"" },
+
         { "test", "lateral_view_json_tuple_view", "SELECT \"$cor0\".\"a\" AS \"a\", \"t0\".\"d\" AS \"d\", \"t0\".\"e\" AS \"e\", \"t0\".\"f\" AS \"f\"\n"
             + "FROM \"test\".\"tablea\" AS \"$cor0\"\nCROSS JOIN LATERAL (SELECT "
             + "\"if\"(\"REGEXP_LIKE\"('trino', '^[^\\\"]*$'), CAST(\"json_extract\"(\"$cor0\".\"b\".\"b1\", '$[\"' || 'trino' || '\"]') AS VARCHAR(65535)), NULL) AS \"d\", "
@@ -151,6 +153,17 @@ public class HiveToTrinoConverterTest {
             + "CAST(\"at_timezone\"(\"from_unixtime\"(CAST(\"a_decimal_zero\" AS DOUBLE)), \"$canonicalize_hive_timezone_id\"('America/Los_Angeles')) AS TIMESTAMP(3)), "
             + "CAST(\"at_timezone\"(\"from_unixtime\"(\"to_unixtime\"(\"with_timezone\"(\"a_timestamp\", 'UTC'))), \"$canonicalize_hive_timezone_id\"('America/Los_Angeles')) AS TIMESTAMP(3)), "
             + "CAST(\"at_timezone\"(\"from_unixtime\"(\"to_unixtime\"(\"with_timezone\"(\"a_date\", 'UTC'))), \"$canonicalize_hive_timezone_id\"('America/Los_Angeles')) AS TIMESTAMP(3))\n"
-            + "FROM \"test\".\"table_from_utc_timestamp\"" }, };
+            + "FROM \"test\".\"table_from_utc_timestamp\"" }, { "test", "date_add_view", "SELECT "
+                + "\"date\"(TIMESTAMP '2021-08-20'), \"date\"(TIMESTAMP '2021-08-20 00:00:00'), "
+                + "\"date_add\"('day', 1, \"date\"(TIMESTAMP '2021-08-20')), "
+                + "\"date_add\"('day', 1, \"date\"(TIMESTAMP '2021-08-20 00:00:00')), "
+                + "\"date_add\"('day', 1 * -1, \"date\"(TIMESTAMP '2021-08-20')), "
+                + "\"date_add\"('day', 1 * -1, \"date\"(TIMESTAMP '2021-08-20 00:00:00')), "
+                + "\"date_diff\"('day', \"date\"(TIMESTAMP '2021-08-21'), \"date\"(TIMESTAMP '2021-08-20')), "
+                + "\"date_diff\"('day', \"date\"(TIMESTAMP '2021-08-19'), \"date\"(TIMESTAMP '2021-08-20')), "
+                + "\"date_diff\"('day', \"date\"(TIMESTAMP '2021-08-19 23:59:59'), \"date\"(TIMESTAMP '2021-08-20 00:00:00'))\n"
+                + "FROM \"test\".\"tablea\"" },
+
+        { "test", "pmod_view", "SELECT MOD(MOD(- 9, 4) + 4, 4)\nFROM \"test\".\"tablea\"" }, };
   }
 }
