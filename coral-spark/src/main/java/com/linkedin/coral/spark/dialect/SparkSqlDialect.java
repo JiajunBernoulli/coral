@@ -1,5 +1,5 @@
 /**
- * Copyright 2018-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2018-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -13,6 +13,8 @@ import org.apache.calcite.sql.SqlUnnestOperator;
 import org.apache.calcite.sql.SqlWriter;
 import org.apache.calcite.sql.fun.SqlMultisetValueConstructor;
 import org.apache.calcite.sql.fun.SqlSubstringFunction;
+
+import com.linkedin.coral.hive.hive2rel.functions.HivePosExplodeOperator;
 
 
 /**
@@ -81,7 +83,11 @@ public class SparkSqlDialect extends SqlDialect {
    *  Code referred from SqlFunctionalOperator.java
    * */
   private void unparseUnnest(SqlWriter writer, SqlCall call) {
-    writer.keyword("EXPLODE");
+    if (call.getOperator() instanceof HivePosExplodeOperator) {
+      writer.keyword("POSEXPLODE");
+    } else {
+      writer.keyword("EXPLODE");
+    }
     final SqlWriter.Frame frame = writer.startList(SqlWriter.FrameTypeEnum.FUN_CALL, "(", ")");
     for (SqlNode operand : call.getOperandList()) {
       writer.sep(",");

@@ -1,5 +1,5 @@
 /**
- * Copyright 2018-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2018-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -8,8 +8,10 @@ package com.linkedin.coral.spark;
 import java.math.BigDecimal;
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.apache.calcite.rel.RelNode;
@@ -50,7 +52,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.linkedin.coral.com.google.common.collect.ImmutableList;
-import com.linkedin.coral.hive.hive2rel.functions.GenericProjectFunction;
+import com.linkedin.coral.com.google.common.collect.Lists;
+import com.linkedin.coral.common.functions.GenericProjectFunction;
+import com.linkedin.coral.hive.hive2rel.functions.CoalesceStructUtility;
 import com.linkedin.coral.hive.hive2rel.functions.HiveNamedStructFunction;
 import com.linkedin.coral.hive.hive2rel.functions.VersionedSqlUserDefinedFunction;
 import com.linkedin.coral.spark.containers.SparkRelInfo;
@@ -82,7 +86,7 @@ class IRRelToSparkRelTransformer {
    *
    */
   static SparkRelInfo transform(RelNode calciteNode) {
-    List<SparkUDFInfo> sparkUDFInfos = new ArrayList<>();
+    Set<SparkUDFInfo> sparkUDFInfos = new HashSet<>();
     RelShuttle converter = new RelShuttleImpl() {
       @Override
       public RelNode visit(LogicalProject project) {
@@ -163,7 +167,7 @@ class IRRelToSparkRelTransformer {
         return new SparkRexConverter(node.getCluster().getRexBuilder(), sparkUDFInfos);
       }
     };
-    return new SparkRelInfo(calciteNode.accept(converter), sparkUDFInfos);
+    return new SparkRelInfo(calciteNode.accept(converter), new ArrayList<>(sparkUDFInfos));
   }
 
   /**
@@ -175,10 +179,10 @@ class IRRelToSparkRelTransformer {
    */
   private static class SparkRexConverter extends RexShuttle {
     private final RexBuilder rexBuilder;
-    private List<SparkUDFInfo> sparkUDFInfos;
+    private final Set<SparkUDFInfo> sparkUDFInfos;
     private static final Logger LOG = LoggerFactory.getLogger(SparkRexConverter.class);
 
-    SparkRexConverter(RexBuilder rexBuilder, List<SparkUDFInfo> sparkUDFInfos) {
+    SparkRexConverter(RexBuilder rexBuilder, Set<SparkUDFInfo> sparkUDFInfos) {
       this.sparkUDFInfos = sparkUDFInfos;
       this.rexBuilder = rexBuilder;
     }
@@ -204,7 +208,7 @@ class IRRelToSparkRelTransformer {
           convertToZeroBasedArrayIndex(updatedCall).orElseGet(() -> convertToNamedStruct(updatedCall)
               .orElseGet(() -> convertFuzzyUnionGenericProject(updatedCall).orElseGet(() -> convertDaliUDF(updatedCall)
                   .orElseGet(() -> convertBuiltInUDF(updatedCall).orElseGet(() -> fallbackToHiveUdf(updatedCall)
-                      .orElseGet(() -> removeExtractUnionFunction(updatedCall).orElse(updatedCall)))))));
+                      .orElseGet(() -> swapExtractUnionFunction(updatedCall).orElse(updatedCall)))))));
 
       return convertToNewNode;
     }
@@ -230,7 +234,7 @@ class IRRelToSparkRelTransformer {
     }
 
     /**
-     * [LIHADOOP-43198] After failing to find the function name in BuiltinUDFMap and TransportableUDFMap,
+     * After failing to find the function name in BuiltinUDFMap and TransportableUDFMap,
      * we call this function to fall back to the original Hive UDF defined in HiveFunctionRegistry.
      * This is reasonable since Spark understands and has ability to run Hive UDF.
      */
@@ -247,7 +251,7 @@ class IRRelToSparkRelTransformer {
           // We do not need to handle the keyword built-in functions.
           VersionedSqlUserDefinedFunction daliUdf = (VersionedSqlUserDefinedFunction) sqlOp;
           String expandedFuncName = daliUdf.getViewDependentFunctionName();
-          //[LIHADOOP-44515] need to provide UDF dependency with ivy coordinates
+          // need to provide UDF dependency with ivy coordinates
           List<String> dependencies = daliUdf.getIvyDependencies();
           List<URI> listOfUris = dependencies.stream().map(URI::create).collect(Collectors.toList());
           sparkUDFInfo = Optional.of(
@@ -323,16 +327,39 @@ class IRRelToSparkRelTransformer {
       return Optional.empty();
     }
 
-    private Optional<RexNode> removeExtractUnionFunction(RexCall call) {
+    /**
+     * Instead of leaving extract_union visible to (Hive)Spark, since we adopted the new exploded struct schema(
+     * a.k.a struct_tr) that is different from extract_union's output (a.k.a struct_ex) to interpret union in Coral IR,
+     * we need to swap the reference of "extract_union" to a new UDF that is coalescing the difference between
+     * struct_tr and struct_ex.
+     *
+     * See com.linkedin.coral.common.functions.FunctionReturnTypes#COALESCE_STRUCT_FUNCTION_RETURN_STRATEGY
+     * and its comments for more details.
+     *
+     * @param call the original extract_union function call.
+     * @return A new {@link RexNode} replacing the original extract_union call.
+     */
+    private Optional<RexNode> swapExtractUnionFunction(RexCall call) {
       if (call.getOperator().getName().equalsIgnoreCase("extract_union")) {
+        // Only when there's a necessity to register coalesce_struct UDF
+        sparkUDFInfos.add(new SparkUDFInfo("com.linkedin.coalescestruct.GenericUDFCoalesceStruct", "coalesce_struct",
+            ImmutableList.of(URI.create("ivy://com.linkedin.coalesce-struct:coalesce-struct-impl:0.0.1")),
+            SparkUDFInfo.UDFTYPE.HIVE_CUSTOM_UDF));
+
         // one arg case: extract_union(field_name)
         if (call.getOperands().size() == 1) {
-          return Optional.of(call.getOperands().get(0));
+          return Optional.of(rexBuilder.makeCall(
+              createUDF("coalesce_struct", CoalesceStructUtility.COALESCE_STRUCT_FUNCTION_RETURN_STRATEGY),
+              call.getOperands()));
         }
         // two arg case: extract_union(field_name, ordinal)
         else if (call.getOperands().size() == 2) {
-          int ordinal = ((RexLiteral) call.getOperands().get(1)).getValueAs(Integer.class);
-          return Optional.of(rexBuilder.makeFieldAccess(call.getOperands().get(0), ordinal));
+          int ordinal = ((RexLiteral) call.getOperands().get(1)).getValueAs(Integer.class) + 1;
+          List<RexNode> operandsCopy = Lists.newArrayList(call.getOperands());
+          operandsCopy.set(1, rexBuilder.makeExactLiteral(new BigDecimal(ordinal)));
+          return Optional.of(rexBuilder.makeCall(
+              createUDF("coalesce_struct", CoalesceStructUtility.COALESCE_STRUCT_FUNCTION_RETURN_STRATEGY),
+              operandsCopy));
         }
       }
       return Optional.empty();

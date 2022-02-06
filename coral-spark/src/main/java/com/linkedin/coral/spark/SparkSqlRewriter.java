@@ -1,5 +1,5 @@
 /**
- * Copyright 2018-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2018-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -9,7 +9,9 @@ import org.apache.calcite.sql.SqlArrayTypeSpec;
 import org.apache.calcite.sql.SqlBasicTypeNameSpec;
 import org.apache.calcite.sql.SqlCall;
 import org.apache.calcite.sql.SqlDataTypeSpec;
+import org.apache.calcite.sql.SqlIntervalLiteral;
 import org.apache.calcite.sql.SqlKind;
+import org.apache.calcite.sql.SqlLiteral;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlRowTypeSpec;
 import org.apache.calcite.sql.SqlTypeNameSpec;
@@ -35,7 +37,7 @@ import com.linkedin.coral.spark.dialect.SparkSqlDialect;
 public class SparkSqlRewriter extends SqlShuttle {
 
   /**
-   *  [LIHADOOP-43199] Spark SQL doesn't support CASTING the named_struct function to a row/struct.
+   *  Spark SQL doesn't support CASTING the named_struct function to a row/struct.
    *  Sushant suggests that we remove this behavior here.
    *
    *  For example:
@@ -93,5 +95,31 @@ public class SparkSqlRewriter extends SqlShuttle {
     } else {
       return type;
     }
+  }
+
+  /**
+   * SparkSQL support intervals in HiveQL syntax like below:
+   *    INTERVAL '-7' DAY
+   * instead of ANSI SQL like below:
+   *    INTERVAL -'7' DAY
+   *
+   * This function will translate ANSI SQL style to HiveQL style.
+   *
+   * @param call the input SqlNode
+   * @return the translated SqlNode
+   */
+  @Override
+  public SqlNode visit(SqlLiteral call) {
+    if (call instanceof SqlIntervalLiteral) {
+      SqlIntervalLiteral literal = (SqlIntervalLiteral) call;
+      SqlIntervalLiteral.IntervalValue value = (SqlIntervalLiteral.IntervalValue) literal.getValue();
+      if (value.getSign() == -1) {
+        // Create a new SqlIntervalLiteral by moving the negative sign to the front of the literalString
+        String intervalLiteralString = "-" + value.getIntervalLiteral();
+        call = SqlLiteral.createInterval(1, intervalLiteralString, value.getIntervalQualifier(),
+            literal.getParserPosition());
+      }
+    }
+    return super.visit(call);
   }
 }

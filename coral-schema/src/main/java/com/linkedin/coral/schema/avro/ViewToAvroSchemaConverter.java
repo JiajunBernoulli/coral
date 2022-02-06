@@ -1,5 +1,5 @@
 /**
- * Copyright 2019-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2019-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -12,7 +12,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.linkedin.coral.com.google.common.base.Preconditions;
-import com.linkedin.coral.hive.hive2rel.HiveMetastoreClient;
+import com.linkedin.coral.common.HiveMetastoreClient;
 import com.linkedin.coral.hive.hive2rel.HiveToRelConverter;
 
 
@@ -30,6 +30,7 @@ import com.linkedin.coral.hive.hive2rel.HiveToRelConverter;
 public class ViewToAvroSchemaConverter {
   private final HiveToRelConverter hiveToRelConverter;
   private final HiveMetastoreClient hiveMetastoreClient;
+  private final RelToAvroSchemaConverter relToAvroSchemaConverter;
   private static final Logger LOG = LoggerFactory.getLogger(ViewToAvroSchemaConverter.class);
 
   /**
@@ -38,7 +39,8 @@ public class ViewToAvroSchemaConverter {
    * @param hiveMetastoreClient
    */
   private ViewToAvroSchemaConverter(HiveMetastoreClient hiveMetastoreClient) {
-    this.hiveToRelConverter = HiveToRelConverter.create(hiveMetastoreClient);
+    this.hiveToRelConverter = new HiveToRelConverter(hiveMetastoreClient);
+    this.relToAvroSchemaConverter = new RelToAvroSchemaConverter(hiveMetastoreClient);
     this.hiveMetastoreClient = hiveMetastoreClient;
   }
 
@@ -93,6 +95,20 @@ public class ViewToAvroSchemaConverter {
   }
 
   /**
+   * An API to generate the avro schema for a SQL string
+   *
+   * @param sql SQL string literal
+   * @return avro schema for a given sql query
+   */
+  // TODO: 2/3/22  to revisit whether we want to make it public
+  protected Schema toAvroSchema(String sql) {
+    Preconditions.checkNotNull(sql);
+
+    RelNode relNode = hiveToRelConverter.convertSql(sql);
+    return relToAvroSchemaConverter.convert(relNode, false);
+  }
+
+  /**
    * An API to generate the avro schema string for a view
    *
    * @param dbName database name
@@ -142,13 +158,9 @@ public class ViewToAvroSchemaConverter {
 
     if (!tableOrView.getTableType().equals("VIRTUAL_VIEW")) {
       // It's base table, just retrieve the avro schema from Hive metastore
-      Schema tableSchema = SchemaUtilities.getAvroSchemaForTable(tableOrView, strictMode);
-
-      return tableSchema;
+      return SchemaUtilities.getAvroSchemaForTable(tableOrView, strictMode);
     } else {
       RelNode relNode = hiveToRelConverter.convertView(dbName, tableOrViewName);
-      RelToAvroSchemaConverter relToAvroSchemaConverter = new RelToAvroSchemaConverter(hiveMetastoreClient);
-
       Schema schema = relToAvroSchemaConverter.convert(relNode, strictMode);
       Schema avroSchema = schema;
 

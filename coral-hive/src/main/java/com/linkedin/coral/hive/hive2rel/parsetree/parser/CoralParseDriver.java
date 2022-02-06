@@ -1,5 +1,5 @@
 /**
- * Copyright 2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2021-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -51,18 +51,18 @@ public class CoralParseDriver extends ParseDriver {
     return tree;
   }
 
-  public class HiveLexerCoral extends HiveLexer {
+  public static class HiveLexerCoral extends HiveLexer {
 
     private final ArrayList<ParseError> errors;
 
     public HiveLexerCoral() {
       super();
-      errors = new ArrayList<ParseError>();
+      errors = new ArrayList<>();
     }
 
     public HiveLexerCoral(CharStream input) {
       super(input);
-      errors = new ArrayList<ParseError>();
+      errors = new ArrayList<>();
     }
 
     @Override

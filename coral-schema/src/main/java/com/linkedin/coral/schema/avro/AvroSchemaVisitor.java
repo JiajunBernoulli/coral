@@ -1,5 +1,5 @@
 /**
- * Copyright 2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2021-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -57,8 +57,8 @@ public abstract class AvroSchemaVisitor<T> {
     }
   }
 
-  private Deque<String> recordLevels = Lists.newLinkedList();
-  private Deque<String> fieldNames = Lists.newLinkedList();
+  private final Deque<String> recordLevels = Lists.newLinkedList();
+  private final Deque<String> fieldNames = Lists.newLinkedList();
 
   protected Deque<String> fieldNames() {
     return fieldNames;

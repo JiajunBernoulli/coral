@@ -1,14 +1,18 @@
 /**
- * Copyright 2019-2020 LinkedIn Corporation. All rights reserved.
+ * Copyright 2019-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
 package com.linkedin.coral.pig.rel2pig;
 
+import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
+import java.util.UUID;
 
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.runtime.Hook;
+import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.ql.CommandNeedRetryException;
@@ -17,8 +21,8 @@ import org.apache.hadoop.hive.ql.metadata.Hive;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.session.SessionState;
 
-import com.linkedin.coral.hive.hive2rel.HiveMetastoreClient;
-import com.linkedin.coral.hive.hive2rel.HiveMscAdapter;
+import com.linkedin.coral.common.HiveMetastoreClient;
+import com.linkedin.coral.common.HiveMscAdapter;
 import com.linkedin.coral.hive.hive2rel.HiveToRelConverter;
 
 
@@ -26,6 +30,8 @@ import com.linkedin.coral.hive.hive2rel.HiveToRelConverter;
  * Provides utility functions used in unit tests
  */
 public class TestUtils {
+
+  public static final String CORAL_PIG_TEST_DIR = "coral.pig.test.dir";
 
   static final String TEST_JSON_FILE_DIR = "src/test/resources/data";
   static HiveToRelConverter hiveToRelConverter;
@@ -38,12 +44,14 @@ public class TestUtils {
    * @throws HiveException
    * @throws MetaException
    */
-  public static void initializeViews() throws HiveException, MetaException {
-    HiveConf conf = loadResourceHiveConf();
+  public static void initializeViews(HiveConf conf) throws HiveException, MetaException, IOException {
+    String testDir = conf.get(CORAL_PIG_TEST_DIR);
+    System.out.println("Test Workspace: " + testDir);
+    FileUtils.deleteDirectory(new File(testDir));
     SessionState.start(conf);
     Driver driver = new Driver(conf);
     HiveMetastoreClient hiveMetastoreClient = new HiveMscAdapter(Hive.get(conf).getMSC());
-    hiveToRelConverter = HiveToRelConverter.create(hiveMetastoreClient);
+    hiveToRelConverter = new HiveToRelConverter(hiveMetastoreClient);
 
     // Views and tables used in unit tests
     run(driver, String.join("\n", "", "CREATE DATABASE IF NOT EXISTS pig"));
@@ -153,9 +161,11 @@ public class TestUtils {
     }
   }
 
-  private static HiveConf loadResourceHiveConf() {
+  public static HiveConf loadResourceHiveConf() {
     InputStream hiveConfStream = TestUtils.class.getClassLoader().getResourceAsStream("hive.xml");
     HiveConf hiveConf = new HiveConf();
+    hiveConf.set(CORAL_PIG_TEST_DIR,
+        System.getProperty("java.io.tmpdir") + "/coral/pig/" + UUID.randomUUID().toString());
     hiveConf.addResource(hiveConfStream);
     hiveConf.set("mapreduce.framework.name", "local-pig");
     hiveConf.set("_hive.hdfs.session.path", "/tmp/coral/pig");

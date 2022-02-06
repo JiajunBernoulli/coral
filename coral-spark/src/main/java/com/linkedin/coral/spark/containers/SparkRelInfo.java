@@ -1,5 +1,5 @@
 /**
- * Copyright 2018-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2018-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -18,8 +18,8 @@ import org.apache.calcite.rel.RelNode;
  * 2) sparkUDFInfoList : Spark UDF information such as ivy link that is required to be registered, before the UDFs are used.
  */
 public class SparkRelInfo {
-  private List<SparkUDFInfo> sparkUDFInfoList;
-  private RelNode sparkRelNode;
+  private final List<SparkUDFInfo> sparkUDFInfoList;
+  private final RelNode sparkRelNode;
 
   public SparkRelInfo(RelNode sparkRelNode, List<SparkUDFInfo> sparkUDFInfoList) {
     this.sparkUDFInfoList = sparkUDFInfoList;

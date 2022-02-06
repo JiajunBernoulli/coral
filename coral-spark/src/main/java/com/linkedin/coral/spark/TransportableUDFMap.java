@@ -1,5 +1,5 @@
 /**
- * Copyright 2018-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2018-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -32,7 +32,7 @@ class TransportableUDFMap {
   }
 
   private static final Logger LOG = LoggerFactory.getLogger(TransportableUDFMap.class);
-  private static final Map<String, Map<ScalaVersion, SparkUDFInfo>> UDF_MAP = new HashMap();
+  private static final Map<String, Map<ScalaVersion, SparkUDFInfo>> UDF_MAP = new HashMap<>();
   public static final String DALI_UDFS_IVY_URL_SPARK_2_11 =
       "ivy://com.linkedin.standard-udfs-dali-udfs:standard-udfs-dali-udfs:2.0.0?classifier=spark_2.11";
   public static final String DALI_UDFS_IVY_URL_SPARK_2_12 =
@@ -45,7 +45,7 @@ class TransportableUDFMap {
 
   static {
 
-    // LIHADOOP-48502: The following UDFs are the legacy Hive UDF. Since they have been converted to
+    // The following UDFs are the legacy Hive UDF. Since they have been converted to
     // Transport UDF, we point their class files to the corresponding Spark jar.
     add("com.linkedin.dali.udf.date.hive.DateFormatToEpoch", "com.linkedin.stdudfs.daliudfs.spark.DateFormatToEpoch",
         DALI_UDFS_IVY_URL_SPARK_2_11, DALI_UDFS_IVY_URL_SPARK_2_12);
@@ -61,7 +61,7 @@ class TransportableUDFMap {
         "com.linkedin.stdudfs.daliudfs.spark.IsGuestMemberId", DALI_UDFS_IVY_URL_SPARK_2_11,
         DALI_UDFS_IVY_URL_SPARK_2_12);
 
-    // LIHADOOP-49851 add the transportudf spark version for lookup UDF
+    // add the transportudf spark version for lookup UDF
     add("com.linkedin.dali.udf.istestmemberid.hive.IsTestMemberId",
         "com.linkedin.stdudfs.daliudfs.spark.IsTestMemberId", DALI_UDFS_IVY_URL_SPARK_2_11,
         DALI_UDFS_IVY_URL_SPARK_2_12);
@@ -72,12 +72,12 @@ class TransportableUDFMap {
     add("com.linkedin.dali.udf.sanitize.hive.Sanitize", "com.linkedin.stdudfs.daliudfs.spark.Sanitize",
         DALI_UDFS_IVY_URL_SPARK_2_11, DALI_UDFS_IVY_URL_SPARK_2_12);
 
-    // LIHADOOP-49851 add the transportudf spark version for lookup UDF
+    // add the transportudf spark version for lookup UDF
     add("com.linkedin.dali.udf.watbotcrawlerlookup.hive.WATBotCrawlerLookup",
         "com.linkedin.stdudfs.daliudfs.spark.WatBotCrawlerLookup", DALI_UDFS_IVY_URL_SPARK_2_11,
         DALI_UDFS_IVY_URL_SPARK_2_12);
 
-    // LIHADOOP-48502: The following UDFs are already defined using Transport UDF.
+    // The following UDFs are already defined using Transport UDF.
     // The class name is the corresponding Hive UDF.
     // We point their class files to the corresponding Spark jar file.
     add("com.linkedin.stdudfs.daliudfs.hive.DateFormatToEpoch", "com.linkedin.stdudfs.daliudfs.spark.DateFormatToEpoch",
@@ -95,7 +95,8 @@ class TransportableUDFMap {
         DALI_UDFS_IVY_URL_SPARK_2_12);
 
     add("com.linkedin.stdudfs.stringudfs.hive.InitCap", "com.linkedin.stdudfs.stringudfs.spark.InitCap",
-        "ivy://com.linkedin.standard-udfs-common-sql-udfs:standard-udfs-string-udfs:0.0.7?classifier=spark", null);
+        "ivy://com.linkedin.standard-udfs-common-sql-udfs:standard-udfs-string-udfs:1.0.1?classifier=spark_2.11",
+        "ivy://com.linkedin.standard-udfs-common-sql-udfs:standard-udfs-string-udfs:1.0.1?classifier=spark_2.12");
 
     add("com.linkedin.stdudfs.daliudfs.hive.IsGuestMemberId", "com.linkedin.stdudfs.daliudfs.spark.IsGuestMemberId",
         DALI_UDFS_IVY_URL_SPARK_2_11, DALI_UDFS_IVY_URL_SPARK_2_12);
@@ -114,20 +115,32 @@ class TransportableUDFMap {
 
     add("com.linkedin.stdudfs.userinterfacelookup.hive.UserInterfaceLookup",
         "com.linkedin.stdudfs.userinterfacelookup.spark.UserInterfaceLookup",
-        "ivy://com.linkedin.standard-udf-userinterfacelookup:userinterfacelookup-std-udf:0.0.9?classifier=spark", null);
+        "ivy://com.linkedin.standard-udf-userinterfacelookup:userinterfacelookup-std-udf:0.0.22?classifier=spark_2.11",
+        "ivy://com.linkedin.standard-udf-userinterfacelookup:userinterfacelookup-std-udf:0.0.22?classifier=spark_2.12");
 
     add("com.linkedin.stdudfs.daliudfs.hive.WatBotCrawlerLookup",
         "com.linkedin.stdudfs.daliudfs.spark.WatBotCrawlerLookup", DALI_UDFS_IVY_URL_SPARK_2_11,
         DALI_UDFS_IVY_URL_SPARK_2_12);
 
     add("com.linkedin.jemslookup.udf.hive.JemsLookup", "com.linkedin.jemslookup.udf.spark.JemsLookup",
-        "ivy://com.linkedin.jobs-udf:jems-udfs:1.0.0?classifier=spark", null);
+        "ivy://com.linkedin.jobs-udf:jems-udfs:2.0.1?classifier=spark_2.11",
+        "ivy://com.linkedin.jobs-udf:jems-udfs:2.0.1?classifier=spark_2.12");
 
     add("com.linkedin.stdudfs.parsing.hive.UserAgentParser", "com.linkedin.stdudfs.parsing.spark.UserAgentParser",
-        "ivy://com.linkedin.standard-udfs-parsing:parsing-stdudfs:2.0.1?classifier=spark", null);
+        "ivy://com.linkedin.standard-udfs-parsing:parsing-stdudfs:3.0.3?classifier=spark_2.11",
+        "ivy://com.linkedin.standard-udfs-parsing:parsing-stdudfs:3.0.3?classifier=spark_2.12");
 
     add("com.linkedin.stdudfs.parsing.hive.Ip2Str", "com.linkedin.stdudfs.parsing.spark.Ip2Str",
-        "ivy://com.linkedin.standard-udfs-parsing:parsing-stdudfs:2.0.1?classifier=spark", null);
+        "ivy://com.linkedin.standard-udfs-parsing:parsing-stdudfs:3.0.3?classifier=spark_2.11",
+        "ivy://com.linkedin.standard-udfs-parsing:parsing-stdudfs:3.0.3?classifier=spark_2.12");
+
+    add("com.linkedin.stdudfs.lookup.hive.BrowserLookup", "com.linkedin.stdudfs.lookup.spark.BrowserLookup",
+        "ivy://com.linkedin.standard-udfs-parsing:parsing-stdudfs:3.0.3?classifier=spark_2.11",
+        "ivy://com.linkedin.standard-udfs-parsing:parsing-stdudfs:3.0.3?classifier=spark_2.12");
+
+    add("com.linkedin.jobs.udf.hive.ConvertIndustryCode", "com.linkedin.jobs.udf.spark.ConvertIndustryCode",
+        "ivy://com.linkedin.jobs-udf:jobs-udfs:2.1.2?classifier=spark_2.11",
+        "ivy://com.linkedin.jobs-udf:jobs-udfs:2.1.2?classifier=spark_2.12");
   }
 
   /**
@@ -139,7 +152,7 @@ class TransportableUDFMap {
   static Optional<SparkUDFInfo> lookup(String className) {
     ScalaVersion scalaVersion = getScalaVersion();
     return Optional.ofNullable(UDF_MAP.get(className)).map(scalaMap -> Optional.ofNullable(scalaMap.get(scalaVersion))
-        .orElseThrow(() -> new UnsupportedUDFException(String.format(
+        .<UnsupportedUDFException> orElseThrow(() -> new UnsupportedUDFException(String.format(
             "Transport UDF for class '%s' is not supported for scala %s, please contact " + "the UDF owner for upgrade",
             className, scalaVersion.toString()))));
   }
@@ -166,7 +179,7 @@ class TransportableUDFMap {
         return ScalaVersion.SCALA_2_12;
       throw new IllegalStateException(String.format("Unsupported Spark Version %s", sparkVersion));
     } catch (IllegalStateException | NoClassDefFoundError ex) {
-      LOG.warn("Couldn't determine Spark version, falling back to scala_2.11", ex);
+      LOG.warn("Couldn't determine Spark version, falling back to scala_2.11: {}", ex.getMessage());
       return ScalaVersion.SCALA_2_11;
     }
   }

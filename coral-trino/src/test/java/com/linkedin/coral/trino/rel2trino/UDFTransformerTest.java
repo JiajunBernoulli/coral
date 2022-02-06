@@ -1,5 +1,5 @@
 /**
- * Copyright 2017-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2017-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -161,7 +161,7 @@ public class UDFTransformerTest {
         "{\"op\":\"+\",\"operands\":[{\"input\":0},{\"input\":3}]}", null, "targetFunc(icol * dcol, scol) + dcol");
 
     testFailedTransformation(tableOneQuery, tableOneConfig, targetUDF,
-        "[{\"op\":\"%\",\"operands\":[{\"input\":2},{\"input\":3}]}, {\"input\":1}]", null, null,
+        "[{\"op\":\"@\",\"operands\":[{\"input\":2},{\"input\":3}]}, {\"input\":1}]", null, null,
         UnsupportedOperationException.class);
   }
 

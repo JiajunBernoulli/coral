@@ -1,5 +1,5 @@
 /**
- * Copyright 2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2021-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -12,7 +12,7 @@ import org.apache.calcite.sql.validate.SqlDelegatingConformance;
 
 public class HiveSqlConformance extends SqlDelegatingConformance {
 
-  public static SqlConformance HIVE_SQL = new HiveSqlConformance();
+  public static final SqlConformance HIVE_SQL = new HiveSqlConformance();
 
   private HiveSqlConformance() {
     super(SqlConformanceEnum.PRAGMATIC_2003);
@@ -20,6 +20,16 @@ public class HiveSqlConformance extends SqlDelegatingConformance {
 
   @Override
   public boolean allowNiladicParentheses() {
+    return true;
+  }
+
+  @Override
+  public boolean isSortByAlias() {
+    return true;
+  }
+
+  @Override
+  public boolean isHavingAlias() {
     return true;
   }
 }

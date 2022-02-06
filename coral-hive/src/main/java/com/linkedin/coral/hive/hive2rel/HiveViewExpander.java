@@ -1,5 +1,5 @@
 /**
- * Copyright 2017-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2017-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -16,9 +16,8 @@ import org.apache.calcite.rel.RelRoot;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.util.Util;
-import org.apache.hadoop.hive.metastore.api.Table;
 
-import com.linkedin.coral.hive.hive2rel.parsetree.ParseTreeBuilder;
+import com.linkedin.coral.common.FuzzyUnionSqlRewriter;
 
 
 /**
@@ -27,16 +26,14 @@ import com.linkedin.coral.hive.hive2rel.parsetree.ParseTreeBuilder;
  */
 public class HiveViewExpander implements RelOptTable.ViewExpander {
 
-  private final RelContextProvider relContextProvider;
-
+  private final HiveToRelConverter hiveToRelConverter;
   /**
    * Instantiates a new Hive view expander.
    *
-   * @param relContextProvider Rel context provider instance
+   * @param hiveToRelConverter Hive to Rel converter
    */
-  public HiveViewExpander(@Nonnull RelContextProvider relContextProvider) {
-    Preconditions.checkNotNull(relContextProvider);
-    this.relContextProvider = relContextProvider;
+  public HiveViewExpander(@Nonnull HiveToRelConverter hiveToRelConverter) {
+    this.hiveToRelConverter = hiveToRelConverter;
   }
 
   @Override
@@ -44,17 +41,11 @@ public class HiveViewExpander implements RelOptTable.ViewExpander {
     Preconditions.checkNotNull(viewPath);
     Preconditions.checkState(!viewPath.isEmpty());
 
-    HiveMetastoreClient msc = relContextProvider.getHiveMetastoreClient();
     String dbName = Util.last(schemaPath);
     String tableName = viewPath.get(0);
-    Table table = msc.getTable(dbName, tableName);
-    if (table == null) {
-      throw new RuntimeException(String.format("Table %s.%s not found", dbName, tableName));
-    }
-    ParseTreeBuilder treeBuilder = new ParseTreeBuilder(msc, relContextProvider.getParseTreeBuilderConfig(),
-        relContextProvider.getHiveFunctionRegistry(), relContextProvider.getDynamicHiveFunctionRegistry());
-    SqlNode viewNode =
-        treeBuilder.processViewOrTable(table).accept(new FuzzyUnionSqlRewriter(tableName, relContextProvider));
-    return relContextProvider.getSqlToRelConverter().convertQuery(viewNode, true, true);
+
+    SqlNode sqlNode = hiveToRelConverter.processView(dbName, tableName)
+        .accept(new FuzzyUnionSqlRewriter(tableName, hiveToRelConverter));
+    return hiveToRelConverter.getSqlToRelConverter().convertQuery(sqlNode, true, true);
   }
 }

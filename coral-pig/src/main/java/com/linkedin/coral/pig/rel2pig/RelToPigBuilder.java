@@ -1,5 +1,5 @@
 /**
- * Copyright 2019-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2019-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -19,8 +19,8 @@ class RelToPigBuilder {
 
   private static final String INTERMEDIATE_ALIAS_PREFIX = "CORAL_PIG_ALIAS_";
   private int intermediateAliasCount = 0;
-  private List<String> statements = new ArrayList<>();
-  private Set<String> functionDefinitions = new HashSet<>();
+  private final List<String> statements = new ArrayList<>();
+  private final Set<String> functionDefinitions = new HashSet<>();
 
   public RelToPigBuilder() {
 

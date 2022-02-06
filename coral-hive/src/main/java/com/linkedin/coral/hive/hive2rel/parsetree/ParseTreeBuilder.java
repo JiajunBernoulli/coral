@@ -1,19 +1,19 @@
 /**
- * Copyright 2017-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2017-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
 package com.linkedin.coral.hive.hive2rel.parsetree;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
-import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
+import org.apache.calcite.avatica.util.TimeUnit;
 import org.apache.calcite.sql.JoinConditionType;
 import org.apache.calcite.sql.JoinType;
 import org.apache.calcite.sql.SqlAsOperator;
@@ -22,6 +22,7 @@ import org.apache.calcite.sql.SqlBasicTypeNameSpec;
 import org.apache.calcite.sql.SqlCall;
 import org.apache.calcite.sql.SqlDataTypeSpec;
 import org.apache.calcite.sql.SqlIdentifier;
+import org.apache.calcite.sql.SqlIntervalQualifier;
 import org.apache.calcite.sql.SqlJoin;
 import org.apache.calcite.sql.SqlKind;
 import org.apache.calcite.sql.SqlLateralOperator;
@@ -32,29 +33,32 @@ import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.SqlSelect;
 import org.apache.calcite.sql.SqlSelectKeyword;
 import org.apache.calcite.sql.SqlTypeNameSpec;
+import org.apache.calcite.sql.SqlWindow;
+import org.apache.calcite.sql.SqlWith;
+import org.apache.calcite.sql.SqlWithItem;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
+import org.apache.calcite.sql.parser.SqlParserPos;
 import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.hadoop.hive.metastore.api.Table;
 
 import com.linkedin.coral.com.google.common.collect.ImmutableList;
 import com.linkedin.coral.com.google.common.collect.Iterables;
-import com.linkedin.coral.hive.hive2rel.HiveMetastoreClient;
-import com.linkedin.coral.hive.hive2rel.functions.FunctionFieldReferenceOperator;
+import com.linkedin.coral.common.functions.Function;
+import com.linkedin.coral.common.functions.FunctionFieldReferenceOperator;
 import com.linkedin.coral.hive.hive2rel.functions.HiveExplodeOperator;
-import com.linkedin.coral.hive.hive2rel.functions.HiveFunction;
-import com.linkedin.coral.hive.hive2rel.functions.HiveFunctionRegistry;
 import com.linkedin.coral.hive.hive2rel.functions.HiveFunctionResolver;
 import com.linkedin.coral.hive.hive2rel.functions.HiveJsonTupleOperator;
+import com.linkedin.coral.hive.hive2rel.functions.HivePosExplodeOperator;
 import com.linkedin.coral.hive.hive2rel.functions.HiveRLikeOperator;
 import com.linkedin.coral.hive.hive2rel.functions.StaticHiveFunctionRegistry;
 import com.linkedin.coral.hive.hive2rel.functions.VersionedSqlUserDefinedFunction;
 import com.linkedin.coral.hive.hive2rel.parsetree.parser.ASTNode;
 import com.linkedin.coral.hive.hive2rel.parsetree.parser.CoralParseDriver;
+import com.linkedin.coral.hive.hive2rel.parsetree.parser.HiveParser;
 import com.linkedin.coral.hive.hive2rel.parsetree.parser.Node;
 import com.linkedin.coral.hive.hive2rel.parsetree.parser.ParseDriver;
 import com.linkedin.coral.hive.hive2rel.parsetree.parser.ParseException;
 
-import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static java.lang.String.format;
 import static org.apache.calcite.sql.parser.SqlParserPos.ZERO;
@@ -80,75 +84,13 @@ import static org.apache.calcite.sql.parser.SqlParserPos.ZERO;
  */
 public class ParseTreeBuilder extends AbstractASTVisitor<SqlNode, ParseTreeBuilder.ParseContext> {
   @SuppressWarnings("OptionalUsedAsFieldOrParameterType")
-  private final HiveMetastoreClient hiveMetastoreClient;
-  private final Config config;
   private final HiveFunctionResolver functionResolver;
-  private HiveFunctionRegistry registry;
 
   /**
    * Constructs a parse tree builder
-   * @param hiveMetastoreClient optional HiveMetastore client. This is required to decode view definitions
-   * @param config parse configuration to use
-   * @param registry Static Hive function registry
-   * @param dynamicRegistry Dynamic Hive function registry (inferred at runtime)
    */
-  public ParseTreeBuilder(HiveMetastoreClient hiveMetastoreClient, Config config, HiveFunctionRegistry registry,
-      ConcurrentHashMap<String, HiveFunction> dynamicRegistry) {
-    checkNotNull(config);
-    checkState(config.catalogName.isEmpty() || !config.defaultDBName.isEmpty(),
-        "Default DB is required if catalog name is not empty");
-    this.hiveMetastoreClient = hiveMetastoreClient;
-    this.config = config;
-    this.functionResolver = new HiveFunctionResolver(registry, dynamicRegistry);
-  }
-
-  /**
-   * This constructor is used for unit testing purpose
-   * Constructs a parse tree builder to use hive metatstore and user provided configuration
-   * @param hiveMetastoreClient optional HiveMetastore client. This is required to decode view definitions
-   * @param config parse configuration to use
-   */
-  public ParseTreeBuilder(@Nullable HiveMetastoreClient hiveMetastoreClient, Config config) {
-    this.hiveMetastoreClient = hiveMetastoreClient;
-    checkNotNull(config);
-    checkState(config.catalogName.isEmpty() || !config.defaultDBName.isEmpty(),
-        "Default DB is required if catalog name is not empty");
-    this.config = config;
-    this.functionResolver = new HiveFunctionResolver(new StaticHiveFunctionRegistry(), new ConcurrentHashMap<>());
-  }
-
-  /**
-   * Creates a parse tree for a hive view using the expanded view text from hive metastore.
-   * This table name is required for handling dali function name resolution.
-   * @param hiveView hive table handle to read expanded text from.  Table name is also allowed.
-   * @return Calcite SqlNode representing parse tree that calcite framework can understand
-   */
-  public SqlNode processViewOrTable(@Nonnull Table hiveView) {
-    checkNotNull(hiveView);
-    String stringViewExpandedText = null;
-    if (hiveView.getTableType().equals("VIRTUAL_VIEW")) {
-      stringViewExpandedText = hiveView.getViewExpandedText();
-    } else {
-      // It is a table, not a view.
-      stringViewExpandedText = "SELECT * FROM " + hiveView.getDbName() + "." + hiveView.getTableName();
-    }
-
-    return process(stringViewExpandedText, hiveView);
-  }
-
-  /**
-   * Gets the hive table handle for db and table and calls {@link #processViewOrTable(Table)}
-   *
-   * @param dbName database name
-   * @param tableName table name
-   * @return {@link SqlNode} object
-   */
-  public SqlNode processView(String dbName, String tableName) {
-    Table table = getMscOrThrow().getTable(dbName, tableName);
-    if (table == null) {
-      throw new RuntimeException(String.format("Unknown table %s.%s", dbName, tableName));
-    }
-    return processViewOrTable(table);
+  public ParseTreeBuilder(HiveFunctionResolver functionResolver) {
+    this.functionResolver = functionResolver;
   }
 
   /**
@@ -161,7 +103,7 @@ public class ParseTreeBuilder extends AbstractASTVisitor<SqlNode, ParseTreeBuild
     return process(sql, null);
   }
 
-  SqlNode process(String sql, @Nullable Table hiveView) {
+  public SqlNode process(String sql, @Nullable Table hiveView) {
     ParseDriver pd = new CoralParseDriver();
     try {
       ASTNode root = pd.parse(sql);
@@ -211,7 +153,8 @@ public class ParseTreeBuilder extends AbstractASTVisitor<SqlNode, ParseTreeBuild
     checkState(aliasOperands.get(0) instanceof SqlCall);
     SqlCall tableFunctionCall = (SqlCall) aliasOperands.get(0);
 
-    if (tableFunctionCall.getOperator() instanceof HiveExplodeOperator) {
+    if (tableFunctionCall.getOperator() instanceof HiveExplodeOperator
+        || tableFunctionCall.getOperator() instanceof HivePosExplodeOperator) {
       return visitLateralViewExplode(sqlNodes, aliasOperands, tableFunctionCall, isOuter);
     }
 
@@ -261,15 +204,25 @@ public class ParseTreeBuilder extends AbstractASTVisitor<SqlNode, ParseTreeBuild
   private SqlNode visitLateralViewExplode(List<SqlNode> sqlNodes, List<SqlNode> aliasOperands,
       SqlCall tableFunctionCall, boolean isOuter) {
     final int operandCount = aliasOperands.size();
-    // array if operandCount == 3: LATERAL VIEW EXPLODE(op0) AS op1(op2)
-    // map if operandCount == 4: LATERAL VIEW EXPLODE(op0) AS op1(op2, op3)
-    checkState(operandCount == 3 || operandCount == 4,
+    // explode array if operandCount == 3: LATERAL VIEW EXPLODE(op0) op1 AS op2
+    // explode map if operandCount == 4: LATERAL VIEW EXPLODE(op0) op1 AS op2, op3
+    // posexplode array if operandCount == 4: LATERAL VIEW POSEXPLODE(op0) op1 AS op2, op3
+    // if operandCount == 2: `LATERAL VIEW EXPLODE(op0) op1` or `LATERAL VIEW POSEXPLODE(op0) op1`
+    //   if op0 is a map, it implies `AS key, value` where key, value are auto-named by Hive
+    //   if op0 is an array, it implies `AS col` for `explode` or `AS ORDINALITY, col` for `posexplode`, which are auto-generated by Hive
+    //   The logic above will be implemented as part of Calcite SqlNode validation
+    //   Note that `operandCount == 2 && isOuter` is not supported yet due to the lack of type information needed
+    //   to derive the correct IF function parameters.
+    checkState(operandCount == 2 || operandCount == 3 || operandCount == 4,
         format("Unsupported LATERAL VIEW EXPLODE operand number: %d", operandCount));
-    // TODO The code below assumes LATERAL VIEW is used with UNNEST EXPLODE only. It should be made more generic.
+    // TODO The code below assumes LATERAL VIEW is used with UNNEST EXPLODE/POSEXPLODE only. It should be made more generic.
     SqlCall unnestCall = tableFunctionCall;
     SqlNode unnestOperand = unnestCall.operand(0);
+    final SqlOperator operator = unnestCall.getOperator();
 
     if (isOuter) {
+      checkState(operandCount > 2,
+          "LATERAL VIEW OUTER EXPLODE without column aliases is not supported. Add 'AS col' or 'AS key, value' to fix it");
       // transforms unnest(b) to unnest( if(b is null or cardinality(b) = 0, ARRAY(null)/MAP(null, null), b))
       SqlNode operandIsNull = SqlStdOperatorTable.IS_NOT_NULL.createCall(ZERO, unnestOperand);
       SqlNode emptyArray = SqlStdOperatorTable.GREATER_THAN.createCall(ZERO,
@@ -278,32 +231,39 @@ public class ParseTreeBuilder extends AbstractASTVisitor<SqlNode, ParseTreeBuild
       // array of [null] or map of (null, null) should be 3rd param to if function. With our type inference, calcite acts
       // smart and for unnest(array[null]) or unnest(map(null, null)) determines return type to be null
       SqlNode arrayOrMapOfNull;
-      if (operandCount == 3) {
+      if (operandCount == 3 || operator instanceof HivePosExplodeOperator) {
         arrayOrMapOfNull = SqlStdOperatorTable.ARRAY_VALUE_CONSTRUCTOR.createCall(ZERO, SqlLiteral.createNull(ZERO));
       } else {
         arrayOrMapOfNull = SqlStdOperatorTable.MAP_VALUE_CONSTRUCTOR.createCall(ZERO, SqlLiteral.createNull(ZERO),
             SqlLiteral.createNull(ZERO));
       }
-      HiveFunction hiveIfFunction = functionResolver.tryResolve("if", null, 1);
+      Function hiveIfFunction = functionResolver.tryResolve("if", null, 1);
       unnestOperand = hiveIfFunction.createCall(SqlLiteral.createCharString("if", ZERO),
           ImmutableList.of(ifCondition, unnestOperand, arrayOrMapOfNull), null);
     }
-    if (operandCount == 3) { // unnest explode array
-      unnestCall = HiveExplodeOperator.EXPLODE.createCall(ZERO,
-          SqlStdOperatorTable.AS.createCall(ZERO, unnestOperand, aliasOperands.get(2)));
-      unnestCall = SqlStdOperatorTable.AS.createCall(ZERO, unnestCall, aliasOperands.get(1), aliasOperands.get(2));
-    } else { // unnest explode map
-      unnestCall = HiveExplodeOperator.EXPLODE.createCall(ZERO, unnestOperand);
+    unnestCall = operator.createCall(ZERO, unnestOperand);
+
+    // The following code can work in both of the two cases:
+    // A. Table alias only, no column aliases.
+    // B. Both table and column aliases.  Note that in this case, the number of column aliases need to match the
+    //    actual number of columns generated from the EXPLODE function, which is calculated by HiveUncollect.deriveRowType
+    /** See also {@link HiveUncollect#deriveRowType()} */
+    List<SqlNode> asOperands = new ArrayList<>();
+    asOperands.add(unnestCall);
+
+    // For POSEXPLODE case, we need to change the order of 2 alias. i.e. `pos, val` -> `val, pos` to be aligned with calcite validation
+    if (operator instanceof HivePosExplodeOperator && operandCount == 4) {
+      asOperands.add(aliasOperands.get(1));
+      asOperands.add(aliasOperands.get(3));
+      asOperands.add(aliasOperands.get(2));
+    } else {
+      asOperands.addAll(aliasOperands.subList(1, aliasOperands.size()));
     }
-    SqlNode rightSelect = new SqlSelect(ZERO, null, new SqlNodeList(ImmutableList.of(SqlIdentifier.star(ZERO)), ZERO),
-        unnestCall, null, null, null, null, null, null, null);
-    SqlNode lateralCall = SqlStdOperatorTable.LATERAL.createCall(ZERO, rightSelect);
-    List<SqlNode> aliasCallOperands = new ArrayList<>();
-    aliasCallOperands.add(lateralCall);
-    aliasCallOperands.addAll(aliasOperands.subList(1, operandCount));
-    SqlCall aliasCall = SqlStdOperatorTable.AS.createCall(ZERO, aliasCallOperands);
+    SqlNode as = SqlStdOperatorTable.AS.createCall(ZERO, asOperands);
+
+    SqlNode lateralCall = SqlStdOperatorTable.LATERAL.createCall(ZERO, as);
     return new SqlJoin(ZERO, sqlNodes.get(1), SqlLiteral.createBoolean(false, ZERO), JoinType.COMMA.symbol(ZERO),
-        aliasCall/*lateralCall*/, JoinConditionType.NONE.symbol(ZERO), null);
+        lateralCall, JoinConditionType.NONE.symbol(ZERO), null);
   }
 
   private SqlNode visitLateralViewJsonTuple(List<SqlNode> sqlNodes, List<SqlNode> aliasOperands, SqlCall sqlCall) {
@@ -319,8 +279,8 @@ public class ParseTreeBuilder extends AbstractASTVisitor<SqlNode, ParseTreeBuild
      TODO the relation alias `jt` is being lost by downstream transformations
      */
 
-    HiveFunction getJsonObjectFunction = functionResolver.tryResolve("get_json_object", null, 2);
-    HiveFunction ifFunction = functionResolver.tryResolve("if", null, 3);
+    Function getJsonObjectFunction = functionResolver.tryResolve("get_json_object", null, 2);
+    Function ifFunction = functionResolver.tryResolve("if", null, 3);
 
     List<SqlNode> jsonTupleOperands = sqlCall.getOperandList();
     SqlNode jsonInput = jsonTupleOperands.get(0);
@@ -335,9 +295,9 @@ public class ParseTreeBuilder extends AbstractASTVisitor<SqlNode, ParseTreeBuild
           SqlStdOperatorTable.CONCAT.createCall(ZERO, SqlLiteral.createCharString("$[\"", ZERO), jsonKey),
           SqlLiteral.createCharString("\"]", ZERO));
 
-      SqlCall getJsonObjectCall = getJsonObjectFunction.createCall(
-          SqlLiteral.createCharString(getJsonObjectFunction.getHiveFunctionName(), ZERO),
-          ImmutableList.of(jsonInput, jsonPath), null);
+      SqlCall getJsonObjectCall =
+          getJsonObjectFunction.createCall(SqlLiteral.createCharString(getJsonObjectFunction.getFunctionName(), ZERO),
+              ImmutableList.of(jsonInput, jsonPath), null);
       // TODO Hive get_json_object returns a string, but currently is mapped in Trino to json_extract which returns a json. Once fixed, remove the CAST
       SqlCall castToString = SqlStdOperatorTable.CAST.createCall(ZERO, getJsonObjectCall,
           // TODO This results in CAST to VARCHAR(65535), which may be too short, but there seems to be no way to avoid that.
@@ -346,9 +306,8 @@ public class ParseTreeBuilder extends AbstractASTVisitor<SqlNode, ParseTreeBuild
       // TODO support jsonKey containing a quotation mark (") or backslash (\)
       SqlCall ifCondition =
           HiveRLikeOperator.RLIKE.createCall(ZERO, jsonKey, SqlLiteral.createCharString("^[^\\\"]*$", ZERO));
-      SqlCall ifFunctionCall =
-          ifFunction.createCall(SqlLiteral.createCharString(ifFunction.getHiveFunctionName(), ZERO),
-              ImmutableList.of(ifCondition, castToString, SqlLiteral.createNull(ZERO)), null);
+      SqlCall ifFunctionCall = ifFunction.createCall(SqlLiteral.createCharString(ifFunction.getFunctionName(), ZERO),
+          ImmutableList.of(ifCondition, castToString, SqlLiteral.createNull(ZERO)), null);
       SqlNode projection = ifFunctionCall;
       // Currently only explicit aliasing is supported. Implicit alias would be c0, c1, etc.
       projections.add(SqlStdOperatorTable.AS.createCall(ZERO, projection, keyAlias));
@@ -447,7 +406,22 @@ public class ParseTreeBuilder extends AbstractASTVisitor<SqlNode, ParseTreeBuild
 
   @Override
   protected SqlNode visitAllColRef(ASTNode node, ParseContext ctx) {
-    return SqlIdentifier.star(ZERO);
+    List<SqlNode> children = visitChildren(node, ctx);
+    // This is to allow t.*
+    // In Hive ASTNode Tree, "t.*" has the following shape
+    // TOK_ALLCOLREF
+    // - TOK_TABLE_OR_COL
+    //   - "t"
+    List<String> names = new ArrayList<>();
+    if (children != null) {
+      for (SqlNode child : children) {
+        names.addAll(((SqlIdentifier) child).names);
+      }
+    }
+    names.add("*");
+    List<SqlParserPos> sqlParserPos = Collections.nCopies(names.size(), ZERO);
+    SqlNode star = SqlIdentifier.star(names, ZERO, sqlParserPos);
+    return star;
   }
 
   @Override
@@ -569,9 +543,35 @@ public class ParseTreeBuilder extends AbstractASTVisitor<SqlNode, ParseTreeBuild
     ASTNode functionNode = (ASTNode) children.get(0);
     String functionName = functionNode.getText();
     List<SqlNode> sqlOperands = visitChildren(children, ctx);
-    HiveFunction hiveFunction = functionResolver.tryResolve(functionName, ctx.hiveTable.orElse(null),
+    Function hiveFunction = functionResolver.tryResolve(functionName, ctx.hiveTable.orElse(null),
         // The first element of sqlOperands is the operator itself. The actual # of operands is sqlOperands.size() - 1
         sqlOperands.size() - 1);
+
+    // Special treatment for Window Function
+    SqlNode lastSqlOperand = sqlOperands.get(sqlOperands.size() - 1);
+    if (lastSqlOperand instanceof SqlWindow) {
+      // For a SQL example of "func() OVER (PARTITIONED BY ...)":
+      // In Hive, TOK_WINDOWSPEC (the window spec) is the last operand of the function "func":
+      //    TOK_FUNCTION will have 1+N+1 children, where the first is the function name, the last is TOK_WINDOWSPEC
+      //    and everything in between are the operands of the function
+      // In Calcite, SqlWindow (the window spec) is a sibling of the function "func":
+      //    SqlBasicCall("OVER") will have 2 children: "func" and SqlWindow
+      /** See {@link #visitWindowSpec(ASTNode, ParseContext)} for SQL, AST Tree and SqlNode Tree examples */
+      SqlNode func =
+          hiveFunction.createCall(sqlOperands.get(0), sqlOperands.subList(1, sqlOperands.size() - 1), quantifier);
+      SqlNode window = lastSqlOperand;
+      return new SqlBasicCall(SqlStdOperatorTable.OVER, new SqlNode[] { func, window }, ZERO);
+    }
+
+    if (functionName.equalsIgnoreCase("SUBSTRING")) {
+      // Calcite overrides instance of SUBSTRING with its default SUBSTRING function as defined in SqlStdOperatorTable,
+      // so we rewrite instances of SUBSTRING as SUBSTR
+      SqlNode originalNode = sqlOperands.get(0);
+      SqlNode substrNode = new SqlIdentifier(ImmutableList.of("SUBSTR"), null, originalNode.getParserPosition(), null);
+      hiveFunction = functionResolver.tryResolve("SUBSTR", ctx.hiveTable.orElse(null), sqlOperands.size() - 1);
+      return hiveFunction.createCall(substrNode, sqlOperands.subList(1, sqlOperands.size()), quantifier);
+    }
+
     return hiveFunction.createCall(sqlOperands.get(0), sqlOperands.subList(1, sqlOperands.size()), quantifier);
   }
 
@@ -626,20 +626,6 @@ public class ParseTreeBuilder extends AbstractASTVisitor<SqlNode, ParseTreeBuild
     List<SqlNode> sqlNodes = visitChildren(node, ctx);
     List<String> names =
         sqlNodes.stream().map(s -> ((SqlIdentifier) s).names).flatMap(List::stream).collect(Collectors.toList());
-    // TODO: these should be configured in or transformed through
-    // a set of rules
-    if (names.size() == 1) {
-      if (!config.defaultDBName.isEmpty()) {
-        names.add(0, config.defaultDBName);
-      }
-      if (!config.catalogName.isEmpty()) {
-        names.add(0, config.catalogName);
-      }
-    } else if (names.size() == 2) {
-      if (!config.catalogName.isEmpty()) {
-        names.add(0, config.catalogName);
-      }
-    }
 
     return new SqlIdentifier(names, ZERO);
   }
@@ -729,10 +715,28 @@ public class ParseTreeBuilder extends AbstractASTVisitor<SqlNode, ParseTreeBuild
   protected SqlNode visitQueryNode(ASTNode node, ParseContext ctx) {
     ArrayList<Node> children = node.getChildren();
     checkState(children != null && !children.isEmpty());
+    SqlNode cte = null;
     ParseContext qc = new ParseContext(ctx.getHiveTable().orElse(null));
-    List<SqlNode> sqlNodes = visitChildren(node, qc);
-    return new SqlSelect(ZERO, qc.keywords, qc.selects, qc.from, qc.where, qc.grpBy, qc.having, null, qc.orderBy, null,
-        qc.fetch);
+    for (Node child : node.getChildren()) {
+      ASTNode ast = (ASTNode) child;
+      if (ast.getType() == HiveParser.TOK_CTE) {
+        // Child of type TOK_CTE represents the "WITH" list
+        /** See {@link #visitCTE(ASTNode, ParseContext) visitCTE} for the return value */
+        cte = visit(ast, new ParseContext(null));
+      } else {
+        // The return values are ignored since all other children of SELECT query will be captures via ParseConext qc.
+        visit(ast, qc);
+      }
+    }
+    SqlSelect select = new SqlSelect(ZERO, qc.keywords, qc.selects, qc.from, qc.where, qc.grpBy, qc.having, null,
+        qc.orderBy, null, qc.fetch);
+    if (cte != null) {
+      // Calcite uses "SqlWith(SqlNodeList of SqlWithItem, SqlSelect)" to represent queries with WITH
+      /** See {@link #visitCTE(ASTNode, ParseContext) visitCTE} for details */
+      return new SqlWith(ZERO, (SqlNodeList) cte, select);
+    } else {
+      return select;
+    }
   }
 
   protected SqlNode visitNil(ASTNode node, ParseContext ctx) {
@@ -796,6 +800,16 @@ public class ParseTreeBuilder extends AbstractASTVisitor<SqlNode, ParseTreeBuild
 
   @Override
   protected SqlNode visitDecimal(ASTNode node, ParseContext ctx) {
+    if (node.getChildCount() == 2) {
+      try {
+        final SqlTypeNameSpec typeNameSpec = new SqlBasicTypeNameSpec(SqlTypeName.DECIMAL,
+            Integer.parseInt(((ASTNode) node.getChildren().get(0)).getText()),
+            Integer.parseInt(((ASTNode) node.getChildren().get(1)).getText()), ZERO);
+        return new SqlDataTypeSpec(typeNameSpec, ZERO);
+      } catch (NumberFormatException e) {
+        return createBasicTypeSpec(SqlTypeName.DECIMAL);
+      }
+    }
     return createBasicTypeSpec(SqlTypeName.DECIMAL);
   }
 
@@ -824,6 +838,159 @@ public class ParseTreeBuilder extends AbstractASTVisitor<SqlNode, ParseTreeBuild
     return SqlLiteral.createCharString(node.getText(), ZERO);
   }
 
+  @Override
+  protected SqlNode visitCTE(ASTNode node, ParseContext ctx) {
+    // ASTNode tree from Hive Antlr
+    // TOK_QUERY
+    // - TOK_FROM
+    // - TOK_INSERT
+    // -- TOK_DESTINATION
+    // -- TOK_SELECT
+    // - TOK_CTE       <-- processed by this method visitCTE
+    // -- TOK_SUBQUERY
+    // --- TOK_QUERY
+    // --- LITERAL (alias of the subquery)
+    // -- TOK_SUBQUERY
+    // --- TOK_QUERY
+    // --- LITERAL (alias of the subquery)
+
+    // SqlNode tree expected by Calcite
+    // - SqlWith
+    // -- withList: SqlNodeList  <-- returned by this method visitCTE
+    // --- element: SqlWithItem
+    // ---- id: SimpleIdentifier
+    // ---- columnList: SqlNodeList (column aliases - not supported by Hive)
+    // ---- definition: SqlSelect
+    // -- node: SqlSelect
+
+    ArrayList<Node> children = node.getChildren();
+    checkState(children != null && !children.isEmpty());
+    // First, visit the children to capture all their translation result (in List<SqlNode>)
+    // All children are expected to be translated into SqlBasicCall(definition, alias) by visitSubquery
+    /** See {@link #visitSubquery(ASTNode, ParseContext) visitSubquery} for details */
+    List<SqlNode> sqlNodeList = visitChildren(node, ctx);
+    // Second, translate the list of SqlBasicCall to list of SqlWithItem
+    List<SqlWithItem> withItemList = new ArrayList<>();
+    for (SqlNode sqlNode : sqlNodeList) {
+      SqlBasicCall call = (SqlBasicCall) sqlNode;
+      SqlNode definition = call.getOperandList().get(0);
+      SqlNode alias = call.getOperandList().get(1);
+      SqlWithItem withItem = new SqlWithItem(ZERO, (SqlIdentifier) alias, null, definition);
+      withItemList.add(withItem);
+    }
+    // Return a SqlNodeList with the contents of the withItemList
+    SqlNodeList result = new SqlNodeList(withItemList, ZERO);
+    return result;
+  }
+
+  @Override
+  protected SqlNode visitWindowSpec(ASTNode node, ParseContext ctx) {
+    // See Apache Hive source code: https://github.com/apache/hive/blob/master/ql/src/java/org/apache/hadoop/hive/ql/parse/CalcitePlanner.java#L4339
+    // "private RelNode genSelectForWindowing(QB qb, RelNode srcRel, HashSet<ColumnInfo> newColumns)"
+
+    // Example SQL:
+    //   ROW_NUMBER() OVER (PARTITION BY x ORDER BY y ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING
+    // Hive Antlr ASTNode Tree:
+    //TOK_FUNCTION
+    //   ROW_NUMBER
+    //   TOK_WINDOWSPEC  <-- processed by this node
+    //      TOK_PARTITIONINGSPEC
+    //         TOK_DISTRIBUTEBY
+    //         TOK_ORDERBY
+    //      TOK_WINDOWRANGE
+    //         CURRENT
+    //         FOLLOWING
+    //            1
+
+    // Calcite SqlNode Tree:
+    // SqlBasicCall(Over):
+    // - SqlBasicCall(ROW_NUMBER)
+    // - SqlWindow  <-- returned by this node
+    // -- partitionList
+    // -- orderList
+    // -- isRows
+    // -- lowerBound
+    // -- upperBound
+    // -- allowPartial
+
+    // Use a separate context to avoid inadvertently having the "ORDER BY" clause from the window added to the SELECT query.
+    ctx = new ParseContext(ctx.hiveTable.orElse(null));
+
+    SqlWindow partitionSpec = (SqlWindow) visitOptionalChildByType(node, ctx, HiveParser.TOK_PARTITIONINGSPEC);
+    SqlWindow windowRange = (SqlWindow) visitOptionalChildByType(node, ctx, HiveParser.TOK_WINDOWRANGE);
+    SqlWindow windowValues = (SqlWindow) visitOptionalChildByType(node, ctx, HiveParser.TOK_WINDOWVALUES);
+    SqlWindow window = windowRange != null ? windowRange : windowValues;
+
+    return new SqlWindow(ZERO, null, null, partitionSpec == null ? SqlNodeList.EMPTY : partitionSpec.getPartitionList(),
+        partitionSpec == null ? SqlNodeList.EMPTY : partitionSpec.getOrderList(),
+        SqlLiteral.createBoolean(windowRange != null, ZERO), window == null ? null : window.getLowerBound(),
+        window == null ? null : window.getUpperBound(), null);
+  }
+
+  @Override
+  protected SqlNode visitPartitioningSpec(ASTNode node, ParseContext ctx) {
+    SqlNode partitionList = visitOptionalChildByType(node, ctx, HiveParser.TOK_DISTRIBUTEBY);
+    SqlNode orderList = visitOptionalChildByType(node, ctx, HiveParser.TOK_ORDERBY);
+    return new SqlWindow(ZERO, null, null, partitionList != null ? (SqlNodeList) partitionList : SqlNodeList.EMPTY,
+        orderList != null ? (SqlNodeList) orderList : SqlNodeList.EMPTY, null, null, null, null);
+  }
+
+  @Override
+  protected SqlNode visitDistributeBy(ASTNode node, ParseContext ctx) {
+    return new SqlNodeList(visitChildren(node, ctx), ZERO);
+  }
+
+  @Override
+  protected SqlNode visitWindowRange(ASTNode node, ParseContext ctx) {
+    // Hive AST:
+    //      TOK_WINDOWRANGE  (ROWS ...)
+    //         CURRENT
+    //         FOLLOWING
+    //            1
+    List<SqlNode> sqlNodeList = visitChildren(node, ctx);
+    SqlNode preceding = sqlNodeList.get(0);
+    SqlNode following = (sqlNodeList.size() < 2 ? null : sqlNodeList.get(1));
+
+    return new SqlWindow(ZERO, null, null, SqlNodeList.EMPTY, SqlNodeList.EMPTY, null, preceding, following, null);
+  }
+
+  @Override
+  protected SqlNode visitWindowValues(ASTNode node, ParseContext ctx) {
+    // Hive AST:
+    //      TOK_WINDOWVALUES  (VALUES ...)
+    //         CURRENT
+    //         FOLLOWING
+    //            1
+
+    // Reuse the same code of visitWindowRange since the AST structure is exactly the same
+    return visitWindowRange(node, ctx);
+  }
+
+  @Override
+  protected SqlNode visitPreceding(ASTNode node, ParseContext ctx) {
+    SqlNode sqlNode = visitChildren(node, ctx).get(0);
+    if (sqlNode.getKind() == SqlKind.LITERAL && sqlNode.toString().equalsIgnoreCase("'UNBOUNDED'")) {
+      return SqlWindow.createUnboundedPreceding(ZERO);
+    } else {
+      return SqlWindow.createPreceding(sqlNode, ZERO);
+    }
+  }
+
+  @Override
+  protected SqlNode visitFollowing(ASTNode node, ParseContext ctx) {
+    SqlNode sqlNode = visitChildren(node, ctx).get(0);
+    if (sqlNode.getKind() == SqlKind.LITERAL && sqlNode.toString().equalsIgnoreCase("'UNBOUNDED'")) {
+      return SqlWindow.createUnboundedFollowing(ZERO);
+    } else {
+      return SqlWindow.createFollowing(sqlNode, ZERO);
+    }
+  }
+
+  @Override
+  protected SqlNode visitCurrentRow(ASTNode node, ParseContext ctx) {
+    return SqlWindow.createCurrentRow(ZERO);
+  }
+
   private SqlDataTypeSpec createBasicTypeSpec(SqlTypeName type) {
     final SqlTypeNameSpec typeNameSpec = new SqlBasicTypeNameSpec(type, ZERO);
     return new SqlDataTypeSpec(typeNameSpec, ZERO);
@@ -834,30 +1001,44 @@ public class ParseTreeBuilder extends AbstractASTVisitor<SqlNode, ParseTreeBuild
     return visitChildren(node, ctx).get(0);
   }
 
-  private HiveMetastoreClient getMscOrThrow() {
-    if (hiveMetastoreClient == null) {
-      throw new RuntimeException("Hive metastore client is required to access table");
-    } else {
-      return hiveMetastoreClient;
+  private SqlIntervalQualifier fromASTIntervalTypeToSqlIntervalQualifier(ASTNode node) {
+    switch (node.getType()) {
+      case HiveParser.TOK_INTERVAL_DAY_LITERAL:
+        return new SqlIntervalQualifier(TimeUnit.DAY, null, ZERO);
+      case HiveParser.TOK_INTERVAL_DAY_TIME_LITERAL:
+        return new SqlIntervalQualifier(TimeUnit.DAY, TimeUnit.SECOND, ZERO);
+      case HiveParser.TOK_INTERVAL_HOUR_LITERAL:
+        return new SqlIntervalQualifier(TimeUnit.HOUR, null, ZERO);
+      case HiveParser.TOK_INTERVAL_MINUTE_LITERAL:
+        return new SqlIntervalQualifier(TimeUnit.MINUTE, null, ZERO);
+      case HiveParser.TOK_INTERVAL_MONTH_LITERAL:
+        return new SqlIntervalQualifier(TimeUnit.MONTH, null, ZERO);
+      case HiveParser.TOK_INTERVAL_SECOND_LITERAL:
+        return new SqlIntervalQualifier(TimeUnit.SECOND, null, ZERO);
+      case HiveParser.TOK_INTERVAL_YEAR_LITERAL:
+        return new SqlIntervalQualifier(TimeUnit.YEAR, null, ZERO);
+      case HiveParser.TOK_INTERVAL_YEAR_MONTH_LITERAL:
+        return new SqlIntervalQualifier(TimeUnit.YEAR, TimeUnit.MONTH, ZERO);
     }
+    throw new UnhandledASTTokenException(node);
   }
 
-  public static class Config {
-    private String catalogName = "";
-    private String defaultDBName = "";
+  @Override
+  protected SqlNode visitIntervalLiteral(ASTNode node, ParseContext ctx) {
+    // Hive Antlr Tree looks like the following:
+    //   ASTNode(token.type = TOK_INTERVAL_DAY_LITERAL, token.text="'28'")
+    // Calcite SqlNode Tree looks like the following:
+    //   SqlIntervalLiteral(1 /* sign */, "28" /* unquotedText */, SqlIntervalQualifier, SqlParserPos)
 
-    public Config setCatalogName(String catalogName) {
-      this.catalogName = catalogName;
-      return this;
-    }
+    SqlIntervalQualifier intervalQualifier = fromASTIntervalTypeToSqlIntervalQualifier(node);
 
-    public Config setDefaultDB(String defaultDBName) {
-      this.defaultDBName = defaultDBName;
-      return this;
-    }
+    String text = node.getToken().getText();
+    String unquotedText = text.replaceAll("['\"]", "");
+
+    return SqlLiteral.createInterval(1, unquotedText, intervalQualifier, ZERO);
   }
 
-  class ParseContext {
+  static class ParseContext {
     @SuppressWarnings("OptionalUsedAsFieldOrParameterType")
     private final Optional<Table> hiveTable;
     SqlNodeList keywords;

@@ -1,14 +1,16 @@
 /**
- * Copyright 2017-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2017-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
 package com.linkedin.coral.trino.rel2trino;
 
+import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
-import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -27,6 +29,7 @@ import org.apache.calcite.tools.FrameworkConfig;
 import org.apache.calcite.tools.Frameworks;
 import org.apache.calcite.tools.Planner;
 import org.apache.calcite.tools.Programs;
+import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.ql.CommandNeedRetryException;
@@ -36,15 +39,17 @@ import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.processors.CommandProcessorResponse;
 import org.apache.hadoop.hive.ql.session.SessionState;
 
-import com.linkedin.coral.hive.hive2rel.HiveMscAdapter;
+import com.linkedin.coral.common.HiveMscAdapter;
 import com.linkedin.coral.hive.hive2rel.HiveToRelConverter;
 
 import static com.linkedin.coral.trino.rel2trino.TestTable.*;
-import static java.lang.String.format;
 
 
 public class TestUtils {
+  public static final String CORAL_TRINO_TEST_DIR = "coral.trino.test.dir";
+
   private static HiveMscAdapter hiveMetastoreClient;
+  static HiveToRelConverter hiveToRelConverter;
 
   public static FrameworkConfig createFrameworkConfig(TestTable... tables) {
     SchemaPlus rootSchema = Frameworks.createRootSchema(true);
@@ -139,8 +144,8 @@ public class TestUtils {
       String replacement = null;
       String alias = m.group(1);
       if (alias.equalsIgnoreCase("integer") || alias.equalsIgnoreCase("double") || alias.equalsIgnoreCase("boolean")
-          || alias.equalsIgnoreCase("varchar") || alias.equalsIgnoreCase("real")
-          || alias.equalsIgnoreCase("varbinary")) {
+          || alias.equalsIgnoreCase("varchar") || alias.equalsIgnoreCase("real") || alias.equalsIgnoreCase("varbinary")
+          || alias.equalsIgnoreCase("timestamp")) {
         replacement = "AS " + alias.toUpperCase();
       } else {
         replacement = "AS \"" + m.group(1).toUpperCase() + "\"";
@@ -183,12 +188,14 @@ public class TestUtils {
     Hook.REL_BUILDER_SIMPLIFY.add(Hook.propertyJ(false));
   }
 
-  public static void initializeViews(Path metastoreDbDirectory) throws HiveException, MetaException {
-    HiveConf conf = loadResourceHiveConf();
-    conf.set("javax.jdo.option.ConnectionURL", format("jdbc:derby:;databaseName=%s;create=true", metastoreDbDirectory));
+  public static void initializeViews(HiveConf conf) throws HiveException, MetaException, IOException {
+    String testDir = conf.get(CORAL_TRINO_TEST_DIR);
+    System.out.println("Test Workspace: " + testDir);
+    FileUtils.deleteDirectory(new File(testDir));
     SessionState.start(conf);
     Driver driver = new Driver(conf);
     hiveMetastoreClient = new HiveMscAdapter(Hive.get(conf).getMSC());
+    hiveToRelConverter = new HiveToRelConverter(hiveMetastoreClient);
 
     // Views and tables used in HiveToTrinoConverterTest
     run(driver, "CREATE DATABASE IF NOT EXISTS test");
@@ -274,6 +281,13 @@ public class TestUtils {
     run(driver,
         "CREATE VIEW test.view_with_outer_explode_struct_array AS SELECT a, c FROM test.table_with_struct_array LATERAL VIEW OUTER EXPLODE(b) t AS c");
 
+    run(driver,
+        "CREATE VIEW test.view_with_date_and_interval AS SELECT CAST('2021-08-30' AS DATE) + INTERVAL '3' DAY FROM test.tableA");
+    run(driver,
+        "CREATE VIEW test.view_with_timestamp_and_interval AS SELECT CAST('2021-08-30' AS TIMESTAMP) + INTERVAL '-3 01:02:03' DAY TO SECOND FROM test.tableA");
+    run(driver,
+        "CREATE VIEW test.view_with_timestamp_and_interval_2 AS SELECT CAST('2021-08-30' AS TIMESTAMP) + INTERVAL '-1-6' YEAR TO MONTH FROM test.tableA");
+
     run(driver, "CREATE TABLE test.table_with_map(a int, b map<string, string>)");
     run(driver,
         "CREATE VIEW test.view_with_explode_map AS SELECT a, c, d FROM test.table_with_map LATERAL VIEW EXPLODE(b) t AS c, d");
@@ -282,12 +296,18 @@ public class TestUtils {
 
     run(driver, "CREATE VIEW IF NOT EXISTS test.current_date_and_timestamp_view AS \n"
         + "SELECT CURRENT_TIMESTAMP, trim(cast(CURRENT_TIMESTAMP as string)) as ct, CURRENT_DATE, CURRENT_DATE as cd, a from test.tableA");
+    run(driver,
+        "CREATE VIEW IF NOT EXISTS test.date_function_view AS \n" + "SELECT date('2021-01-02') as a from test.tableA");
     run(driver, "CREATE VIEW IF NOT EXISTS test.lateral_view_json_tuple_view AS \n"
         + "SELECT a, d, e, f FROM test.tableA LATERAL VIEW json_tuple(b.b1, 'trino', 'always', 'rocks') jt AS d, e, f");
     run(driver, "CREATE VIEW IF NOT EXISTS test.lateral_view_json_tuple_view_qualified AS \n"
         + "SELECT `t`.`a`, `jt`.`d`, `jt`.`e`, `jt`.`f` FROM `test`.`tableA` AS `t` LATERAL VIEW json_tuple(`t`.`b`.`b1`, \"trino\", \"always\", \"rocks\") `jt` AS `d`, `e`, `f`");
     run(driver, "CREATE VIEW IF NOT EXISTS test.get_json_object_view AS \n"
         + "SELECT get_json_object(b.b1, '$.name') FROM test.tableA");
+
+    run(driver, "CREATE VIEW IF NOT EXISTS test.map_array_view AS \n"
+        + "SELECT MAP('key1', 'value1', 'key2', 'value2') AS simple_map_col, "
+        + "MAP('key1', MAP('a', 'b', 'c', 'd'), 'key2', MAP('a', 'b', 'c', 'd')) AS nested_map_col FROM test.tableA");
 
     run(driver,
         "CREATE TABLE test.table_from_utc_timestamp (a_tinyint tinyint, a_smallint smallint, "
@@ -304,15 +324,52 @@ public class TestUtils {
             + "from_utc_timestamp(a_decimal_zero, 'America/Los_Angeles'), "
             + "from_utc_timestamp(a_timestamp, 'America/Los_Angeles'), "
             + "from_utc_timestamp(a_date, 'America/Los_Angeles')" + "FROM test.table_from_utc_timestamp");
+
+    run(driver, "CREATE VIEW IF NOT EXISTS test.date_calculation_view AS \n"
+        + "SELECT to_date(substr('2021-08-20', 1, 10)), to_date('2021-08-20'), " + "to_date('2021-08-20 00:00:00'), "
+        + "date_add('2021-08-20', 1), " + "date_add('2021-08-20 00:00:00', 1), " + "date_sub('2021-08-20', 1), "
+        + "date_sub('2021-08-20 00:00:00', 1), " + "datediff('2021-08-20', '2021-08-21'), "
+        + "datediff('2021-08-20', '2021-08-19'), " + "datediff('2021-08-20 00:00:00', '2021-08-19 23:59:59')"
+        + "FROM test.tableA");
+
+    run(driver, "CREATE VIEW IF NOT EXISTS test.pmod_view AS \n" + "SELECT pmod(-9, 4) FROM test.tableA");
+
+    run(driver, "CREATE TABLE IF NOT EXISTS test.tableR(a int, b string, c int)");
+    run(driver,
+        "CREATE VIEW IF NOT EXISTS test.nullscollationd_view AS \n" + "SELECT a,b,c FROM test.tableR ORDER  BY b DESC");
+
+    run(driver, "CREATE VIEW IF NOT EXISTS test.t_dot_star_view AS \n"
+        + "SELECT ta.*, tb.b as tbb FROM test.tableA as ta JOIN test.tableA as tb ON ta.a = tb.a");
+
+    run(driver, "CREATE TABLE IF NOT EXISTS test.table_ints_strings( a int, b int, c string, d string)");
+
+    run(driver, "CREATE VIEW IF NOT EXISTS test.greatest_view AS \n"
+        + "SELECT greatest(t.a, t.b) as g_int, greatest(t.c, t.d) as g_string FROM test.table_ints_strings t");
+
+    run(driver, "CREATE VIEW IF NOT EXISTS test.least_view AS \n"
+        + "SELECT least(t.a, t.b) as g_int, least(t.c, t.d) as g_string FROM test.table_ints_strings t");
+
+    run(driver, "CREATE VIEW IF NOT EXISTS test.cast_decimal_view AS \n"
+        + "SELECT CAST(t.a as DECIMAL(6,2)) as casted_decimal FROM test.table_ints_strings t");
+
+    run(driver, "CREATE TABLE IF NOT EXISTS test.tableS (structCol struct<a:int>)");
+    run(driver, "CREATE TABLE IF NOT EXISTS test.tableT (structCol struct<a:int>)");
+    run(driver, "CREATE VIEW IF NOT EXISTS test.viewA AS SELECT structCol as struct_col FROM test.tableS");
+    run(driver, "CREATE VIEW IF NOT EXISTS test.viewB AS SELECT structCol as struct_col FROM test.tableT");
+    run(driver,
+        "CREATE VIEW IF NOT EXISTS test.view_with_transform_column_name_reset AS SELECT struct_col AS structCol FROM (SELECT * FROM test.viewA UNION ALL SELECT * FROM test.viewB) X");
+    run(driver, "ALTER TABLE test.tableT CHANGE COLUMN structCol structCol struct<a:int, b:string>");
   }
 
   public static RelNode convertView(String db, String view) {
-    return HiveToRelConverter.create(hiveMetastoreClient).convertView(db, view);
+    return new HiveToRelConverter(hiveMetastoreClient).convertView(db, view);
   }
 
-  private static HiveConf loadResourceHiveConf() {
+  public static HiveConf loadResourceHiveConf() {
     InputStream hiveConfStream = TestUtils.class.getClassLoader().getResourceAsStream("hive.xml");
     HiveConf hiveConf = new HiveConf();
+    hiveConf.set(CORAL_TRINO_TEST_DIR,
+        System.getProperty("java.io.tmpdir") + "/coral/trino/" + UUID.randomUUID().toString());
     hiveConf.addResource(hiveConfStream);
     hiveConf.set("mapreduce.framework.name", "local-trino");
     hiveConf.set("_hive.hdfs.session.path", "/tmp/coral/trino");

@@ -1,28 +1,42 @@
 /**
- * Copyright 2018-2020 LinkedIn Corporation. All rights reserved.
+ * Copyright 2018-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
 package com.linkedin.coral.hive.hive2rel;
 
+import java.io.File;
 import java.io.IOException;
 
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.runtime.CalciteContextException;
+import org.apache.commons.io.FileUtils;
+import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
+import org.testng.annotations.AfterTest;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
-import static com.linkedin.coral.hive.hive2rel.ToRelConverter.*;
+import com.linkedin.coral.common.ToRelConverterTestUtils;
+
+import static com.linkedin.coral.common.ToRelConverterTestUtils.*;
 import static org.testng.Assert.*;
 
 
 public class NamedStructTest {
 
+  private static HiveConf conf;
+
   @BeforeClass
   public static void beforeClass() throws HiveException, MetaException, IOException {
-    ToRelConverter.setup();
+    conf = TestUtils.loadResourceHiveConf();
+    ToRelConverterTestUtils.setup(conf);
+  }
+
+  @AfterTest
+  public void afterClass() throws IOException {
+    FileUtils.deleteDirectory(new File(conf.get(TestUtils.CORAL_HIVE_TEST_DIR)));
   }
 
   @Test

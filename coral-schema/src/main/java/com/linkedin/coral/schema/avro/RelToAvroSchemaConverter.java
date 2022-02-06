@@ -1,5 +1,5 @@
 /**
- * Copyright 2019-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2019-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -50,7 +50,6 @@ import org.apache.calcite.rex.RexRangeRef;
 import org.apache.calcite.rex.RexShuttle;
 import org.apache.calcite.rex.RexSubQuery;
 import org.apache.calcite.rex.RexTableInputRef;
-import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.validate.SqlUserDefinedFunction;
 import org.apache.calcite.util.Pair;
 import org.apache.hadoop.hive.metastore.api.Table;
@@ -58,7 +57,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.linkedin.coral.com.google.common.base.Preconditions;
-import com.linkedin.coral.hive.hive2rel.HiveMetastoreClient;
+import com.linkedin.coral.common.HiveMetastoreClient;
 import com.linkedin.coral.hive.hive2rel.rel.HiveUncollect;
 
 
@@ -152,9 +151,9 @@ public class RelToAvroSchemaConverter {
    * this way is that we want to build avro schema in a bottom-up manner
    *
    */
-  private class SchemaRelShuttle extends RelShuttleImpl {
-    private Map<RelNode, Schema> schemaMap;
-    private boolean strictMode;
+  private static class SchemaRelShuttle extends RelShuttleImpl {
+    private final Map<RelNode, Schema> schemaMap;
+    private final boolean strictMode;
 
     private final HiveMetastoreClient hiveMetastoreClient;
 
@@ -207,7 +206,8 @@ public class RelToAvroSchemaConverter {
 
       SchemaBuilder.FieldAssembler<Schema> logicalProjectFieldAssembler =
           SchemaBuilder.record(inputSchema.getName()).namespace(inputSchema.getNamespace()).fields();
-      logicalProject.accept(new SchemaRexShuttle(inputSchema, suggestedFieldNames, logicalProjectFieldAssembler));
+      logicalProject.accept(new SchemaRexShuttle(inputSchema, logicalProject.getInput(), suggestedFieldNames,
+          logicalProjectFieldAssembler));
 
       schemaMap.put(logicalProject, logicalProjectFieldAssembler.endRecord());
 
@@ -227,11 +227,11 @@ public class RelToAvroSchemaConverter {
       SchemaBuilder.FieldAssembler<Schema> logicalJoinFieldAssembler =
           SchemaBuilder.record(leftInputSchema.getName()).namespace(leftInputSchema.getNamespace()).fields();
 
-      for (int i = 0; i < leftInputSchemaFields.size(); i++) {
-        SchemaUtilities.appendField(leftInputSchemaFields.get(i), logicalJoinFieldAssembler);
+      for (Schema.Field leftInputSchemaField : leftInputSchemaFields) {
+        SchemaUtilities.appendField(leftInputSchemaField, logicalJoinFieldAssembler);
       }
-      for (int i = 0; i < rightInputSchemaFields.size(); i++) {
-        SchemaUtilities.appendField(rightInputSchemaFields.get(i), logicalJoinFieldAssembler);
+      for (Schema.Field rightInputSchemaField : rightInputSchemaFields) {
+        SchemaUtilities.appendField(rightInputSchemaField, logicalJoinFieldAssembler);
       }
 
       schemaMap.put(logicalJoin, logicalJoinFieldAssembler.endRecord());
@@ -295,7 +295,8 @@ public class RelToAvroSchemaConverter {
       for (Pair<AggregateCall, String> aggCall : logicalAggregate.getNamedAggCalls()) {
         String fieldName = SchemaUtilities.toAvroQualifiedName(aggCall.right);
         RelDataType fieldType = aggCall.left.getType();
-        SchemaUtilities.appendField(fieldName, fieldType, null, logicalAggregateFieldAssembler, true);
+        SchemaUtilities.appendField(fieldName, fieldType,
+            SchemaUtilities.generateDocumentationForAggregate(aggCall.left), logicalAggregateFieldAssembler, true);
       }
 
       schemaMap.put(logicalAggregate, logicalAggregateFieldAssembler.endRecord());
@@ -366,16 +367,23 @@ public class RelToAvroSchemaConverter {
   /**
    * This class extends RexShuttle. It's used to generate avro schema while traversing RexNode.
    */
-  private class SchemaRexShuttle extends RexShuttle {
-    private Schema inputSchema;
-    private Queue<String> suggestedFieldNames;
-    private SchemaBuilder.FieldAssembler<Schema> fieldAssembler;
+  private static class SchemaRexShuttle extends RexShuttle {
+    private final Schema inputSchema;
+    private final Queue<String> suggestedFieldNames;
+    private final SchemaBuilder.FieldAssembler<Schema> fieldAssembler;
+    private RelNode inputNode;
 
     public SchemaRexShuttle(Schema inputSchema, Queue<String> suggestedFieldNames,
         SchemaBuilder.FieldAssembler<Schema> fieldAssembler) {
       this.inputSchema = inputSchema;
       this.suggestedFieldNames = suggestedFieldNames;
       this.fieldAssembler = fieldAssembler;
+    }
+
+    public SchemaRexShuttle(Schema inputSchema, RelNode inputNode, Queue<String> suggestedFieldNames,
+        SchemaBuilder.FieldAssembler<Schema> fieldAssembler) {
+      this(inputSchema, suggestedFieldNames, fieldAssembler);
+      this.inputNode = inputNode;
     }
 
     @Override
@@ -405,28 +413,24 @@ public class RelToAvroSchemaConverter {
     public RexNode visitLiteral(RexLiteral rexLiteral) {
       RexNode rexNode = super.visitLiteral(rexLiteral);
       RelDataType fieldType = rexLiteral.getType();
-      appendField(fieldType, true, null);
+      appendField(fieldType, true, SchemaUtilities.generateDocumentationForLiteral(rexLiteral));
 
       return rexNode;
     }
 
     @Override
     public RexNode visitCall(RexCall rexCall) {
-      if (rexCall.getOperator() instanceof SqlUserDefinedFunction || rexCall.getOperator() instanceof SqlOperator) {
-        /**
-         * For SqlUserDefinedFunction and SqlOperator RexCall, no need to handle it recursively
-         * and only return type of udf or sql operator is relevant
-         * TODO: Populate doc for queries with rex call.
-         */
-        RelDataType fieldType = rexCall.getType();
-        boolean isNullable = SchemaUtilities.isFieldNullable(rexCall, inputSchema);
+      /**
+       * For SqlUserDefinedFunction and SqlOperator RexCall, no need to handle it recursively
+       * and only return type of udf or sql operator is relevant
+       */
+      RelDataType fieldType = rexCall.getType();
+      boolean isNullable = SchemaUtilities.isFieldNullable(rexCall, inputSchema);
 
-        appendField(fieldType, isNullable, null);
+      appendField(fieldType, isNullable,
+          SchemaUtilities.generateDocumentationForFunctionCall(rexCall, inputSchema, inputNode));
 
-        return rexCall;
-      } else {
-        return super.visitCall(rexCall);
-      }
+      return rexCall;
     }
 
     @Override
@@ -456,31 +460,46 @@ public class RelToAvroSchemaConverter {
     @Override
     public RexNode visitFieldAccess(RexFieldAccess rexFieldAccess) {
       RexNode referenceExpr = rexFieldAccess.getReferenceExpr();
-      Deque<String> innerRecordNames = new LinkedList<>();
-      while (!(referenceExpr instanceof RexInputRef)) {
-        if (referenceExpr instanceof RexCall
-            && ((RexCall) referenceExpr).getOperator().getName().equalsIgnoreCase("ITEM")) {
-          // While selecting `int_field` from `array_col:array<struct<int_field:int>>` using `array_col[x].int_field`,
-          // `rexFieldAccess` is like `ITEM($1, 1).int_field`, we need to set `referenceExpr` to be the first operand (`$1`) of `ITEM` function
-          referenceExpr = ((RexCall) referenceExpr).getOperands().get(0);
-        } else if (referenceExpr instanceof RexFieldAccess) {
-          // While selecting `int_field` from `struct_col:struct<inner_struct_col:struct<int_field:int>>` using `struct_col.inner_struct_col.int_field`,
-          // `rexFieldAccess` is like `$3.inner_struct_col.int_field`, we need to set `referenceExpr` to be the expr (`$3`) of itself.
-          // Besides, we need to store the field name (`inner_struct_col`) in `fieldNames` so that we can retrieve the correct inner struct from `topSchema` afterwards
-          innerRecordNames.push(((RexFieldAccess) referenceExpr).getField().getName());
-          referenceExpr = ((RexFieldAccess) referenceExpr).getReferenceExpr();
-        } else {
-          return super.visitFieldAccess(rexFieldAccess);
-        }
-      }
-      String oldFieldName = rexFieldAccess.getField().getName();
-      String suggestNewFieldName = suggestedFieldNames.poll();
-      String newFieldName = SchemaUtilities.getFieldName(oldFieldName, suggestNewFieldName);
-      Schema topSchema = inputSchema.getFields().get(((RexInputRef) referenceExpr).getIndex()).schema();
 
-      Schema.Field accessedField = getFieldFromTopSchema(topSchema, oldFieldName, innerRecordNames);
-      assert accessedField != null;
-      SchemaUtilities.appendField(newFieldName, accessedField, fieldAssembler);
+      if (referenceExpr instanceof RexCall
+          && ((RexCall) referenceExpr).getOperator() instanceof SqlUserDefinedFunction) {
+        String oldFieldName = rexFieldAccess.getField().getName();
+        String suggestNewFieldName = suggestedFieldNames.poll();
+        String newFieldName = SchemaUtilities.getFieldName(oldFieldName, suggestNewFieldName);
+
+        RelDataType fieldType = rexFieldAccess.getType();
+        boolean isNullable = SchemaUtilities.isFieldNullable((RexCall) referenceExpr, inputSchema);
+        // TODO: add field documentation
+        SchemaUtilities.appendField(newFieldName, fieldType, null, fieldAssembler, isNullable);
+      } else {
+        Deque<String> innerRecordNames = new LinkedList<>();
+        while (!(referenceExpr instanceof RexInputRef)) {
+          if (referenceExpr instanceof RexCall
+              && ((RexCall) referenceExpr).getOperator().getName().equalsIgnoreCase("ITEM")) {
+            // While selecting `int_field` from `array_col:array<struct<int_field:int>>` using `array_col[x].int_field`,
+            // `rexFieldAccess` is like `ITEM($1, 1).int_field`, we need to set `referenceExpr` to be the first operand (`$1`) of `ITEM` function
+            referenceExpr = ((RexCall) referenceExpr).getOperands().get(0);
+          } else if (referenceExpr instanceof RexFieldAccess) {
+            // While selecting `int_field` from `struct_col:struct<inner_struct_col:struct<int_field:int>>` using `struct_col.inner_struct_col.int_field`,
+            // `rexFieldAccess` is like `$3.inner_struct_col.int_field`, we need to set `referenceExpr` to be the expr (`$3`) of itself.
+            // Besides, we need to store the field name (`inner_struct_col`) in `fieldNames` so that we can retrieve the correct inner struct from `topSchema` afterwards
+            innerRecordNames.push(((RexFieldAccess) referenceExpr).getField().getName());
+            referenceExpr = ((RexFieldAccess) referenceExpr).getReferenceExpr();
+          } else {
+            return super.visitFieldAccess(rexFieldAccess);
+          }
+        }
+
+        String oldFieldName = rexFieldAccess.getField().getName();
+        String suggestNewFieldName = suggestedFieldNames.poll();
+        String newFieldName = SchemaUtilities.getFieldName(oldFieldName, suggestNewFieldName);
+        Schema topSchema = inputSchema.getFields().get(((RexInputRef) referenceExpr).getIndex()).schema();
+
+        Schema.Field accessedField = getFieldFromTopSchema(topSchema, oldFieldName, innerRecordNames);
+        assert accessedField != null;
+        SchemaUtilities.appendField(newFieldName, accessedField, fieldAssembler);
+      }
+
       return rexFieldAccess;
     }
 

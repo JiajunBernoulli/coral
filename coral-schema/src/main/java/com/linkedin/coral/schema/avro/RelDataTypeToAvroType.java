@@ -1,5 +1,5 @@
 /**
- * Copyright 2019-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2019-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -21,6 +21,8 @@ import org.apache.calcite.sql.type.BasicSqlType;
 import org.apache.calcite.sql.type.MapSqlType;
 import org.apache.calcite.sql.type.MultisetSqlType;
 import org.apache.calcite.sql.type.SqlTypeName;
+import org.apache.hadoop.hive.serde2.avro.AvroSerDe;
+import org.codehaus.jackson.node.JsonNodeFactory;
 
 import com.linkedin.coral.com.google.common.base.Preconditions;
 
@@ -97,15 +99,21 @@ class RelDataTypeToAvroType {
       case CHAR:
         return Schema.create(Schema.Type.STRING);
       case BINARY:
+      case ANY:
         return Schema.create(Schema.Type.BYTES);
       case NULL:
         return Schema.create(Schema.Type.NULL);
-      case ANY:
-        return Schema.create(Schema.Type.BYTES);
       case TIMESTAMP:
         Schema schema = Schema.create(Schema.Type.LONG);
         schema.addProp("logicalType", "timestamp");
         return schema;
+      case DECIMAL:
+        JsonNodeFactory factory = JsonNodeFactory.instance;
+        Schema decimalSchema = Schema.create(Schema.Type.BYTES);
+        decimalSchema.addProp(AvroSerDe.AVRO_PROP_LOGICAL_TYPE, AvroSerDe.DECIMAL_TYPE_NAME);
+        decimalSchema.addProp(AvroSerDe.AVRO_PROP_PRECISION, factory.numberNode(relDataType.getPrecision()));
+        decimalSchema.addProp(AvroSerDe.AVRO_PROP_SCALE, factory.numberNode(relDataType.getScale()));
+        return decimalSchema;
       default:
         throw new UnsupportedOperationException(relDataType.getSqlTypeName() + " is not supported.");
     }
@@ -125,7 +133,7 @@ class RelDataTypeToAvroType {
    */
   private static Schema relRecordTypeToAvroType(RelDataType relRecord, List<String> fieldComments, String recordName,
       String recordNamespace, String doc) {
-    final List<Schema.Field> fields = new ArrayList();
+    final List<Schema.Field> fields = new ArrayList<>();
     final Schema avroSchema = Schema.createRecord(recordName, doc, recordNamespace, false);
 
     for (RelDataTypeField relField : relRecord.getFieldList()) {

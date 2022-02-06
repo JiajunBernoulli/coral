@@ -1,5 +1,5 @@
 /**
- * Copyright 2019-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2019-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -12,7 +12,7 @@ import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.sql.type.MapSqlType;
 
-import com.linkedin.coral.hive.hive2rel.functions.UnknownSqlFunctionException;
+import com.linkedin.coral.common.functions.UnknownSqlFunctionException;
 import com.linkedin.coral.pig.rel2pig.exceptions.UnsupportedRexCallException;
 import com.linkedin.coral.pig.rel2pig.rel.PigRexUtils;
 

@@ -1,5 +1,5 @@
 /**
- * Copyright 2017-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2017-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -15,7 +15,7 @@ import org.antlr.runtime.tree.CommonErrorNode;
 public class ASTErrorNode extends ASTNode {
 
   private static final long serialVersionUID = 1L;
-  CommonErrorNode delegate;
+  final CommonErrorNode delegate;
 
   public ASTErrorNode(TokenStream input, Token start, Token stop, RecognitionException e) {
     delegate = new CommonErrorNode(input, start, stop, e);

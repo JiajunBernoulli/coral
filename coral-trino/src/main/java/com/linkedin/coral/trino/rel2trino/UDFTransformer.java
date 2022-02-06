@@ -1,5 +1,5 @@
 /**
- * Copyright 2017-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2017-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -23,14 +23,17 @@ import com.google.gson.JsonPrimitive;
 
 import org.apache.calcite.rex.RexBuilder;
 import org.apache.calcite.rex.RexNode;
+import org.apache.calcite.sql.SqlCall;
 import org.apache.calcite.sql.SqlIdentifier;
 import org.apache.calcite.sql.SqlOperator;
+import org.apache.calcite.sql.SqlWriter;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.parser.SqlParserPos;
 import org.apache.calcite.sql.type.OperandTypes;
 import org.apache.calcite.sql.validate.SqlUserDefinedFunction;
 
-import com.linkedin.coral.hive.hive2rel.functions.HiveReturnTypes;
+import com.linkedin.coral.com.google.common.base.Preconditions;
+import com.linkedin.coral.common.functions.FunctionReturnTypes;
 
 
 /**
@@ -124,9 +127,25 @@ public class UDFTransformer {
     OP_MAP.put("*", SqlStdOperatorTable.MULTIPLY);
     OP_MAP.put("/", SqlStdOperatorTable.DIVIDE);
     OP_MAP.put("^", SqlStdOperatorTable.POWER);
+    OP_MAP.put("%", SqlStdOperatorTable.MOD);
+    OP_MAP.put("date", new SqlUserDefinedFunction(new SqlIdentifier("date", SqlParserPos.ZERO),
+        FunctionReturnTypes.DATE, null, OperandTypes.STRING, null, null));
+    OP_MAP.put("timestamp", new SqlUserDefinedFunction(new SqlIdentifier("timestamp", SqlParserPos.ZERO),
+        FunctionReturnTypes.TIMESTAMP, null, OperandTypes.STRING, null, null) {
+      @Override
+      public void unparse(SqlWriter writer, SqlCall call, int leftPrec, int rightPrec) {
+        // for timestamp operator, we need to construct `CAST(x AS TIMESTAMP)`
+        Preconditions.checkState(call.operandCount() == 1);
+        final SqlWriter.Frame frame = writer.startFunCall("CAST");
+        call.operand(0).unparse(writer, 0, 0);
+        writer.sep("AS");
+        writer.literal("TIMESTAMP");
+        writer.endFunCall(frame);
+      }
+    });
     OP_MAP.put("hive_pattern_to_trino",
         new SqlUserDefinedFunction(new SqlIdentifier("hive_pattern_to_trino", SqlParserPos.ZERO),
-            HiveReturnTypes.STRING, null, OperandTypes.STRING, null, null));
+            FunctionReturnTypes.STRING, null, OperandTypes.STRING, null, null));
   }
 
   public static final String OPERATOR = "op";
@@ -223,7 +242,7 @@ public class UDFTransformer {
   public RexNode transformCall(RexBuilder rexBuilder, List<RexNode> sourceOperands) {
     final SqlOperator newTargetOperator = transformTargetOperator(targetOperator, sourceOperands);
     if (newTargetOperator == null || newTargetOperator.getName().isEmpty()) {
-      String operands = sourceOperands.stream().map(i -> i.toString()).collect(Collectors.joining(","));
+      String operands = sourceOperands.stream().map(RexNode::toString).collect(Collectors.joining(","));
       throw new IllegalArgumentException(String.format(
           "An equivalent Trino operator was not found for the function call: %s(%s)", calciteOperatorName, operands));
     }

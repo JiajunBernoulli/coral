@@ -1,10 +1,11 @@
 /**
- * Copyright 2017-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2017-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
 package com.linkedin.coral.hive.hive2rel;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
@@ -19,26 +20,31 @@ import org.apache.calcite.sql.type.ReturnTypes;
 import org.apache.calcite.sql.type.SqlTypeFamily;
 import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.tools.RelBuilder;
+import org.apache.commons.io.FileUtils;
+import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
-import org.apache.thrift.TException;
+import org.testng.annotations.AfterTest;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
+import com.linkedin.coral.common.ToRelConverterTestUtils;
+import com.linkedin.coral.common.functions.UnknownSqlFunctionException;
 import com.linkedin.coral.hive.hive2rel.functions.StaticHiveFunctionRegistry;
-import com.linkedin.coral.hive.hive2rel.functions.UnknownSqlFunctionException;
 
-import static com.linkedin.coral.hive.hive2rel.ToRelConverter.*;
+import static com.linkedin.coral.common.ToRelConverterTestUtils.*;
 import static org.apache.calcite.sql.type.OperandTypes.*;
 import static org.testng.Assert.*;
-import static org.testng.Assert.assertEquals;
 
 
 public class HiveToRelConverterTest {
 
+  private static HiveConf conf;
+
   @BeforeClass
   public static void beforeClass() throws IOException, HiveException, MetaException {
-    ToRelConverter.setup();
+    conf = TestUtils.loadResourceHiveConf();
+    ToRelConverterTestUtils.setup(conf);
 
     // add the following 3 test UDF to StaticHiveFunctionRegistry for testing purpose.
     StaticHiveFunctionRegistry.createAddUserDefinedFunction("com.linkedin.coral.hive.hive2rel.CoralTestUDF",
@@ -47,12 +53,14 @@ public class HiveToRelConverterTest {
         ReturnTypes.BOOLEAN, family(SqlTypeFamily.INTEGER), "com.linkedin:udf:1.0");
     StaticHiveFunctionRegistry.createAddUserDefinedFunction("com.linkedin.coral.hive.hive2rel.CoralTestUdfSquare",
         ReturnTypes.INTEGER, family(SqlTypeFamily.INTEGER), "com.linkedin:udf:1.1");
-
   }
 
-  @Test
-  public void testBasic() {
-    String sql = "SELECT * from foo";
+  @AfterTest
+  public void afterClass() throws IOException {
+    FileUtils.deleteDirectory(new File(conf.get(TestUtils.CORAL_HIVE_TEST_DIR)));
+  }
+
+  public void testBasicWithSQL(String sql) {
     RelNode rel = converter.convertSql(sql);
     RelBuilder relBuilder = createRelBuilder();
     RelNode expected = relBuilder.scan(ImmutableList.of("hive", "default", "foo"))
@@ -60,6 +68,188 @@ public class HiveToRelConverterTest {
             ImmutableList.of(), true)
         .build();
     verifyRel(rel, expected);
+  }
+
+  @Test
+  public void testBasic() {
+    testBasicWithSQL("SELECT * from foo");
+  }
+
+  @Test
+  public void testBasic2() {
+    testBasicWithSQL("SELECT * from default.foo");
+  }
+
+  @Test
+  public void testWith1() {
+    // Test if the code can handle the use of the first alias from the WithList
+    String sql = "WITH tmp AS (SELECT a, b from foo), tmp2 AS (SELECT b, c from foo) SELECT * FROM tmp";
+    RelNode rel = converter.convertSql(sql);
+    RelBuilder relBuilder = createRelBuilder();
+    RelNode expected = relBuilder.scan(ImmutableList.of("hive", "default", "foo"))
+        .project(ImmutableList.of(relBuilder.field("a"), relBuilder.field("b")), ImmutableList.of(), true).build();
+    verifyRel(rel, expected);
+  }
+
+  @Test
+  public void testWith2() {
+    // Test if the code can handle the use of the second alias from the WithList
+    String sql = "WITH tmp AS (SELECT a, b from foo), tmp2 AS (SELECT b, c from foo) SELECT * FROM tmp2";
+    RelNode rel = converter.convertSql(sql);
+    RelBuilder relBuilder = createRelBuilder();
+    RelNode expected = relBuilder.scan(ImmutableList.of("hive", "default", "foo"))
+        .project(ImmutableList.of(relBuilder.field("b"), relBuilder.field("c")), ImmutableList.of(), true).build();
+    verifyRel(rel, expected);
+  }
+
+  @Test
+  public void testWithNested() {
+    // Test if the code can handle the use of an alias "tmp" within the definitino of another alias "tmp2"
+    String sql = "WITH tmp AS (SELECT a, b from foo), tmp2 AS (SELECT b from tmp) SELECT * FROM tmp2";
+    RelNode rel = converter.convertSql(sql);
+    RelBuilder relBuilder = createRelBuilder();
+    RelNode expected = relBuilder.scan(ImmutableList.of("hive", "default", "foo"))
+        .project(ImmutableList.of(relBuilder.field("b")), ImmutableList.of(), true).build();
+    verifyRel(rel, expected);
+  }
+
+  @Test
+  public void testWindowSpec() {
+    // Test if the code can handle the use of window functions
+    String sql = "SELECT ROW_NUMBER() OVER (PARTITION BY a ORDER BY b) AS rid FROM foo";
+    RelNode rel = converter.convertSql(sql);
+    String relString = relToStr(rel);
+    String expected =
+        "LogicalProject(rid=[ROW_NUMBER() OVER (PARTITION BY $0 ORDER BY $1 NULLS FIRST ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)])\n"
+            + "  LogicalTableScan(table=[[hive, default, foo]])\n";
+    assertEquals(relString, expected);
+  }
+
+  @Test
+  public void testWindowWithRowsUnboundedPreceding() {
+    // Test if the code can handle the use of window functions with rows
+    String sql = "SELECT MIN(c) OVER (PARTITION BY a ORDER BY b ROWS UNBOUNDED PRECEDING) AS min_c FROM foo";
+    RelNode rel = converter.convertSql(sql);
+    String relString = relToStr(rel);
+    String expected =
+        "LogicalProject(min_c=[MIN($2) OVER (PARTITION BY $0 ORDER BY $1 NULLS FIRST ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)])\n"
+            + "  LogicalTableScan(table=[[hive, default, foo]])\n";
+    assertEquals(relString, expected);
+  }
+
+  @Test
+  public void testWindowWithRangeUnboundedPreceding() {
+    // Test if the code can handle the use of window functions with range
+    String sql = "SELECT VARIANCE(c) OVER (PARTITION BY a ORDER BY b RANGE UNBOUNDED PRECEDING) AS var_c FROM foo";
+    RelNode rel = converter.convertSql(sql);
+    String relString = relToStr(rel);
+    String expected =
+        "LogicalProject(var_c=[/(-(CASE(>(COUNT(*($2, $2)) OVER (PARTITION BY $0 ORDER BY $1 NULLS FIRST RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), 0), CAST($SUM0(*($2, $2)) OVER (PARTITION BY $0 ORDER BY $1 NULLS FIRST RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)):DOUBLE, null:DOUBLE), /(*(CASE(>(COUNT($2) OVER (PARTITION BY $0 ORDER BY $1 NULLS FIRST RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), 0), CAST($SUM0($2) OVER (PARTITION BY $0 ORDER BY $1 NULLS FIRST RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)):DOUBLE, null:DOUBLE), CASE(>(COUNT($2) OVER (PARTITION BY $0 ORDER BY $1 NULLS FIRST RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), 0), CAST($SUM0($2) OVER (PARTITION BY $0 ORDER BY $1 NULLS FIRST RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)):DOUBLE, null:DOUBLE)), CAST(COUNT($2) OVER (PARTITION BY $0 ORDER BY $1 NULLS FIRST RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)):DOUBLE)), CASE(=(COUNT($2) OVER (PARTITION BY $0 ORDER BY $1 NULLS FIRST RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), 1), null:BIGINT, CAST(-(COUNT($2) OVER (PARTITION BY $0 ORDER BY $1 NULLS FIRST RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), 1)):BIGINT))])\n"
+            + "  LogicalTableScan(table=[[hive, default, foo]])\n";
+    assertEquals(relString, expected);
+  }
+
+  @Test
+  public void testWindowWithRowsPrecedingAndFollowing() {
+    // Test if the code can handle the use of window functions with "rows between" and "current row"
+    String sql =
+        "SELECT FIRST_VALUE(c) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS first_value_c FROM foo";
+    RelNode rel = converter.convertSql(sql);
+    String relString = relToStr(rel);
+    String expected =
+        "LogicalProject(first_value_c=[FIRST_VALUE($2) OVER (PARTITION BY $0 ORDER BY $1 NULLS FIRST ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)])\n"
+            + "  LogicalTableScan(table=[[hive, default, foo]])\n";
+    assertEquals(relString, expected);
+  }
+
+  @Test
+  public void testWindowWithRowsPrecedingAndFollowingCurrentRow() {
+    // Test if the code can handle the use of window functions with "rows between" and "current row"
+    String sql =
+        "SELECT LAST_VALUE(c) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING) FROM foo";
+    RelNode rel = converter.convertSql(sql);
+    String relString = relToStr(rel);
+    String expected =
+        "LogicalProject(EXPR$0=[LAST_VALUE($2) OVER (PARTITION BY $0 ORDER BY $1 NULLS FIRST ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING)])\n"
+            + "  LogicalTableScan(table=[[hive, default, foo]])\n";
+    assertEquals(relString, expected);
+  }
+
+  @Test
+  public void testWindowWithNoPartition() {
+    // Test if the code can handle the use of window functions with no "partition by"
+    String sql = "SELECT RANK() OVER (ORDER BY b) AS rank FROM foo";
+    RelNode rel = converter.convertSql(sql);
+    String relString = relToStr(rel);
+    String expected =
+        "LogicalProject(rank=[RANK() OVER (ORDER BY $1 NULLS FIRST RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)])\n"
+            + "  LogicalTableScan(table=[[hive, default, foo]])\n";
+    assertEquals(relString, expected);
+  }
+
+  @Test
+  public void testWindowWithNoPartitionNoOrder() {
+    // Test if the code can handle the use of window functions with no "partition by" or "order by"
+    String sql = "SELECT a, MAX(c) OVER () AS max_c FROM foo";
+    RelNode rel = converter.convertSql(sql);
+    String relString = relToStr(rel);
+    String expected =
+        "LogicalProject(a=[$0], max_c=[MAX($2) OVER (RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)])\n"
+            + "  LogicalTableScan(table=[[hive, default, foo]])\n";
+    assertEquals(relString, expected);
+  }
+
+  @Test
+  public void testLateralViewArray() {
+    // Test if the code can handle lateral view explode with an array
+    String sql = "SELECT col FROM (SELECT ARRAY('a1', 'a2') as a) tmp LATERAL VIEW EXPLODE(a) a_alias AS col";
+    RelNode rel = converter.convertSql(sql);
+    String relString = relToStr(rel);
+    String expected = "LogicalProject(col=[$1])\n"
+        + "  LogicalCorrelate(correlation=[$cor0], joinType=[inner], requiredColumns=[{0}])\n"
+        + "    LogicalProject(a=[ARRAY('a1', 'a2')])\n" + "      LogicalValues(tuples=[[{ 0 }]])\n"
+        + "    HiveUncollect\n" + "      LogicalProject(col=[$cor0.a])\n" + "        LogicalValues(tuples=[[{ 0 }]])\n";
+    assertEquals(relString, expected);
+  }
+
+  @Test
+  public void testLateralViewArrayWithoutColumns() {
+    // Test if the code can handle lateral view explode with an array without column aliases
+    String sql = "SELECT a_alias.col FROM (SELECT ARRAY('a1', 'a2') as a) tmp LATERAL VIEW EXPLODE(a) a_alias";
+    RelNode rel = converter.convertSql(sql);
+    String relString = relToStr(rel);
+    String expected = "LogicalProject(col=[$1])\n"
+        + "  LogicalCorrelate(correlation=[$cor0], joinType=[inner], requiredColumns=[{0}])\n"
+        + "    LogicalProject(a=[ARRAY('a1', 'a2')])\n" + "      LogicalValues(tuples=[[{ 0 }]])\n"
+        + "    HiveUncollect\n" + "      LogicalProject(col=[$cor0.a])\n" + "        LogicalValues(tuples=[[{ 0 }]])\n";
+    assertEquals(relString, expected);
+  }
+
+  @Test
+  public void testLateralViewMap() {
+    // Test if the code can handle lateral view explode with a map
+    String sql =
+        "SELECT key, value FROM (SELECT MAP('key1', 'value1') as m) tmp LATERAL VIEW EXPLODE(m) m_alias AS key, value";
+    RelNode rel = converter.convertSql(sql);
+    String relString = relToStr(rel);
+    String expected = "LogicalProject(key=[$1], value=[$2])\n"
+        + "  LogicalCorrelate(correlation=[$cor0], joinType=[inner], requiredColumns=[{0}])\n"
+        + "    LogicalProject(m=[MAP('key1', 'value1')])\n" + "      LogicalValues(tuples=[[{ 0 }]])\n"
+        + "    HiveUncollect\n" + "      LogicalProject(col=[$cor0.m])\n" + "        LogicalValues(tuples=[[{ 0 }]])\n";
+    assertEquals(relString, expected);
+  }
+
+  @Test
+  public void testLateralViewMapWithoutColumns() {
+    // Test if the code can handle lateral view explode with a map without column aliases
+    String sql = "SELECT key, value FROM (SELECT MAP('key1', 'value1') as m) tmp LATERAL VIEW EXPLODE(m) m_alias";
+    RelNode rel = converter.convertSql(sql);
+    String relString = relToStr(rel);
+    String expected = "LogicalProject(key=[$1], value=[$2])\n"
+        + "  LogicalCorrelate(correlation=[$cor0], joinType=[inner], requiredColumns=[{0}])\n"
+        + "    LogicalProject(m=[MAP('key1', 'value1')])\n" + "      LogicalValues(tuples=[[{ 0 }]])\n"
+        + "    HiveUncollect\n" + "      LogicalProject(col=[$cor0.m])\n" + "        LogicalValues(tuples=[[{ 0 }]])\n";
+    assertEquals(relString, expected);
   }
 
   @Test
@@ -173,7 +363,7 @@ public class HiveToRelConverterTest {
   }
 
   @Test
-  public void testViewExpansion() throws TException {
+  public void testViewExpansion() {
     {
       String sql = "SELECT avg(sum_c) from foo_view";
       RelNode rel = converter.convertSql(sql);
@@ -340,7 +530,7 @@ public class HiveToRelConverterTest {
   public void testConversionWithLocalMetastore() {
     Map<String, Map<String, List<String>>> localMetaStore = ImmutableMap.of("default",
         ImmutableMap.of("table_localstore", ImmutableList.of("name|string", "company|string", "group_name|string")));
-    HiveToRelConverter hiveToRelConverter = HiveToRelConverter.create(localMetaStore);
+    HiveToRelConverter hiveToRelConverter = new HiveToRelConverter(localMetaStore);
     RelNode rel = hiveToRelConverter.convertSql("SELECT * FROM default.table_localstore");
 
     final String expectedSql = "SELECT *\n" + "FROM hive.default.table_localstore";
@@ -377,6 +567,55 @@ public class HiveToRelConverterTest {
     final String expectedSql =
         "SELECT a, COUNT(*) count\nFROM (SELECT a, 1 $f1\nFROM hive.default.foo\nGROUP BY a) t1\nGROUP BY a";
     assertEquals(relToHql(rel), expectedSql);
+  }
+
+  @Test
+  public void testComment() {
+    final String expected =
+        "LogicalProject(a=[$0], b=[$1], c=[$2])\n" + "  LogicalTableScan(table=[[hive, default, foo]])\n";
+
+    // single-line comments
+    final String sql1 = "--comment 0\nSELECT * -- comment1\nFROM foo";
+    String generated1 = relToString(sql1);
+    assertEquals(generated1, expected);
+
+    // bracketed comments
+    final String sql2 =
+        "/* comment0 */\n/*comment1*//* comment 2*/ /**/ SELECT /*comm\nent3*/* FROM default./*\ncomment4\n*/foo /* comment5 */";
+    String generated2 = relToString(sql2);
+    assertEquals(generated2, expected);
+
+    // comments with both styles mixed
+    final String sql3 =
+        "-- comment 0\n/*comment1*/-- comment 2\nSELECT /*comm\nent3*/* FROM/**/default./*comment4*/foo /* comment5 */--";
+    String generated3 = relToString(sql3);
+    assertEquals(generated3, expected);
+  }
+
+  @Test
+  public void testConcat() {
+    final String expected = "LogicalProject(EXPR$0=[concat('a', 'b')])\n" + "  LogicalValues(tuples=[[{ 0 }]])\n";
+    final String sql = "SELECT 'a' || 'b'";
+    String generated = relToString(sql);
+    assertEquals(generated, expected);
+  }
+
+  @Test
+  public void testCastToDecimal() {
+    final String expected =
+        "LogicalProject(EXPR$0=[CAST($0):DECIMAL(6, 2)])\n" + "  LogicalTableScan(table=[[hive, default, foo]])\n";
+    final String sql = "SELECT CAST(a AS DECIMAL(6, 2)) FROM foo";
+    String generated = relToString(sql);
+    assertEquals(generated, expected);
+  }
+
+  @Test
+  public void testCastToDecimalDefault() {
+    final String expected =
+        "LogicalProject(EXPR$0=[CAST($0):DECIMAL(10, 0)])\n" + "  LogicalTableScan(table=[[hive, default, foo]])\n";
+    final String sql = "SELECT CAST(a AS DECIMAL) FROM foo";
+    String generated = relToString(sql);
+    assertEquals(generated, expected);
   }
 
   private String relToString(String sql) {

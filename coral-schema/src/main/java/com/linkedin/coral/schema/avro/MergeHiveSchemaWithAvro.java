@@ -1,5 +1,5 @@
 /**
- * Copyright 2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2021-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -24,7 +24,7 @@ import org.codehaus.jackson.node.JsonNodeFactory;
 
 import com.linkedin.coral.com.google.common.base.Preconditions;
 
-import static org.apache.hadoop.hive.serde2.avro.AvroSerdeUtils.*;
+import static com.linkedin.coral.schema.avro.AvroSerdeUtils.*;
 
 
 /**

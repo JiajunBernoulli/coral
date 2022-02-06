@@ -1,20 +1,23 @@
 /**
- * Copyright 2020 LinkedIn Corporation. All rights reserved.
+ * Copyright 2020-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
 package com.linkedin.coral.sparkplan;
 
+import java.io.File;
 import java.io.IOException;
 
+import org.apache.commons.io.FileUtils;
+import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
+import org.testng.annotations.AfterTest;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
-import com.linkedin.coral.hive.hive2rel.HiveMscAdapter;
-import com.linkedin.coral.hive.hive2rel.RelContextProvider;
+import com.linkedin.coral.common.HiveMscAdapter;
 
 import static org.testng.Assert.*;
 
@@ -22,15 +25,20 @@ import static org.testng.Assert.*;
 public class SparkPlanToIRRelConverterTest {
 
   private static SparkPlanToIRRelConverter converter;
-  private static RelContextProvider relContextProvider;
+  private static HiveConf conf;
 
   @BeforeClass
   public static void beforeClass() throws IOException, HiveException, MetaException {
-    TestUtils.TestHive testHive = TestUtils.setupDefaultHive();
+    conf = TestUtils.loadResourceHiveConf();
+    TestUtils.TestHive testHive = TestUtils.setupDefaultHive(conf);
     final IMetaStoreClient msc = testHive.getMetastoreClient();
     HiveMscAdapter hiveMscAdapter = new HiveMscAdapter(msc);
     converter = SparkPlanToIRRelConverter.create(hiveMscAdapter);
-    relContextProvider = new RelContextProvider(hiveMscAdapter);
+  }
+
+  @AfterTest
+  public void afterClass() throws IOException {
+    FileUtils.deleteDirectory(new File(conf.get(TestUtils.CORAL_SPARKPLAN_TEST_DIR)));
   }
 
   @Test

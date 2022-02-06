@@ -1,10 +1,12 @@
 def modules = [
+  'coral-common',
   'coral-hive',
   'coral-pig',
   'coral-spark',
   'coral-schema',
   'coral-spark-plan',
-  'coral-trino'
+  'coral-trino',
+  'shading'
 ]
 
 modules.each { module ->

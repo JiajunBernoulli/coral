@@ -1,17 +1,21 @@
 /**
- * Copyright 2019-2020 LinkedIn Corporation. All rights reserved.
+ * Copyright 2019-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
 package com.linkedin.coral.pig.rel2pig;
 
+import java.io.File;
 import java.io.IOException;
 
+import org.apache.commons.io.FileUtils;
+import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.pig.pigunit.PigTest;
 import org.apache.pig.tools.parameters.ParseException;
 import org.testng.Assert;
+import org.testng.annotations.AfterTest;
 import org.testng.annotations.BeforeTest;
 import org.testng.annotations.Test;
 
@@ -19,11 +23,18 @@ import org.testng.annotations.Test;
 public class CalcitePigUDFTest {
 
   static final String OUTPUT_RELATION = "view";
+  static private HiveConf conf;
 
   @BeforeTest
-  public static void beforeTest() throws HiveException, MetaException {
+  public static void beforeTest() throws HiveException, MetaException, IOException {
+    conf = TestUtils.loadResourceHiveConf();
     TestUtils.turnOffRelSimplification();
-    TestUtils.initializeViews();
+    TestUtils.initializeViews(conf);
+  }
+
+  @AfterTest
+  public void afterClass() throws IOException {
+    FileUtils.deleteDirectory(new File(conf.get(TestUtils.CORAL_PIG_TEST_DIR)));
   }
 
   /**
@@ -59,7 +70,6 @@ public class CalcitePigUDFTest {
     final String[] expectedOutput = { "(greater)" };
 
     final String[] translatedPigLatin = TestUtils.sqlToPigLatin(sql, OUTPUT_RELATION);
-    System.out.println(translatedPigLatin);
 
     Assert.assertEquals(translatedPigLatin, expectedPigLatin);
 
@@ -80,7 +90,6 @@ public class CalcitePigUDFTest {
     final String[] expectedOutput = { "(1.5849625007211563)" };
 
     final String[] translatedPigLatin = TestUtils.sqlToPigLatin(sql, OUTPUT_RELATION);
-    System.out.println(translatedPigLatin);
 
     Assert.assertEquals(translatedPigLatin, expectedPigLatin);
 
@@ -101,7 +110,6 @@ public class CalcitePigUDFTest {
     final String[] expectedOutput = { "(1.5849625007211563)" };
 
     final String[] translatedPigLatin = TestUtils.sqlToPigLatin(sql, OUTPUT_RELATION);
-    System.out.println(translatedPigLatin);
 
     Assert.assertEquals(translatedPigLatin, expectedPigLatin);
 
@@ -267,8 +275,7 @@ public class CalcitePigUDFTest {
   private static void runTestSuite(String sqlTemplate, String expectedPigLatinTemplate, PigFunctionTest[] testSuite)
       throws IOException, ParseException {
 
-    for (int i = 0; i < testSuite.length; ++i) {
-      final PigFunctionTest pigFunctionTest = testSuite[i];
+    for (final PigFunctionTest pigFunctionTest : testSuite) {
       final String sql = String.format(sqlTemplate, pigFunctionTest.getSqlName(), pigFunctionTest.getOperands());
       final String[] expectedPigLatin = String
           .format(expectedPigLatinTemplate, pigFunctionTest.getPigName(), pigFunctionTest.getOperands()).split("\n");

@@ -1,5 +1,5 @@
 /**
- * Copyright 2019-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2019-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -71,8 +71,8 @@ import com.linkedin.coral.pig.rel2pig.rel.PigTableScan;
  */
 public class RelToPigLatinConverter {
 
-  private PigLoadFunction pigLoadFunction;
-  private TableToPigPathFunction tableToPigPathFunction;
+  private final PigLoadFunction pigLoadFunction;
+  private final TableToPigPathFunction tableToPigPathFunction;
 
   public RelToPigLatinConverter(PigLoadFunction pigLoadFunction, TableToPigPathFunction tableToPigPathFunction) {
     this.pigLoadFunction = pigLoadFunction;

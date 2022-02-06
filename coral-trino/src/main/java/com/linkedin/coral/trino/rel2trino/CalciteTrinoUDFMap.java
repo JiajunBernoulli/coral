@@ -1,5 +1,5 @@
 /**
- * Copyright 2017-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2017-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -15,7 +15,7 @@ import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import com.linkedin.coral.com.google.common.base.CaseFormat;
 import com.linkedin.coral.com.google.common.base.Converter;
 import com.linkedin.coral.com.google.common.collect.ImmutableMultimap;
-import com.linkedin.coral.hive.hive2rel.functions.HiveFunction;
+import com.linkedin.coral.common.functions.Function;
 import com.linkedin.coral.hive.hive2rel.functions.HiveRLikeOperator;
 import com.linkedin.coral.hive.hive2rel.functions.StaticHiveFunctionRegistry;
 import com.linkedin.coral.trino.rel2trino.functions.TrinoElementAtFunction;
@@ -27,7 +27,7 @@ public class CalciteTrinoUDFMap {
   private CalciteTrinoUDFMap() {
   }
 
-  private static final Map<String, UDFTransformer> UDF_MAP = new HashMap();
+  private static final Map<String, UDFTransformer> UDF_MAP = new HashMap<>();
   private static final StaticHiveFunctionRegistry HIVE_REGISTRY = new StaticHiveFunctionRegistry();
   static {
     // conditional functions
@@ -54,6 +54,9 @@ public class CalciteTrinoUDFMap {
     createUDFMapEntry(UDF_MAP, hiveToCalciteOp("get_json_object"), 2, "json_extract");
 
     // map various hive functions
+    createUDFMapEntry(UDF_MAP, hiveToCalciteOp("pmod"), 2, "mod",
+        "[{\"op\":\"+\",\"operands\":[{\"op\":\"%\",\"operands\":[{\"input\":1},{\"input\":2}]},{\"input\":2}]},{\"input\":2}]",
+        null);
     createUDFMapEntry(UDF_MAP, hiveToCalciteOp("base64"), 1, "to_base64");
     createUDFMapEntry(UDF_MAP, hiveToCalciteOp("unbase64"), 1, "from_base64");
     createUDFMapEntry(UDF_MAP, hiveToCalciteOp("hex"), 1, "to_hex");
@@ -64,6 +67,19 @@ public class CalciteTrinoUDFMap {
     createUDFMapEntry(UDF_MAP, hiveToCalciteOp("instr"), 2, "strpos");
     createRuntimeUDFMapEntry(UDF_MAP, hiveToCalciteOp("decode"), 2,
         "[{\"regex\":\"(?i)('utf-8')\", \"input\":2, \"name\":\"from_utf8\"}]", "[{\"input\":1}]", null);
+
+    createUDFMapEntry(UDF_MAP, hiveToCalciteOp("to_date"), 1, "date",
+        "[{\"op\": \"timestamp\", \"operands\":[{\"input\": 1}]}]", null);
+    createUDFMapEntry(UDF_MAP, hiveToCalciteOp("date_add"), 2, "date_add", "[{\"value\": 'day'}, {\"input\": 2},  "
+        + "{\"op\": \"date\", \"operands\":[{\"op\": \"timestamp\", \"operands\":[{\"input\": 1}]}]}]", null);
+    createUDFMapEntry(UDF_MAP, hiveToCalciteOp("date_sub"), 2, "date_add",
+        "[{\"value\": 'day'}, " + "{\"op\": \"*\", \"operands\":[{\"input\": 2}, {\"value\": -1}]}, "
+            + "{\"op\": \"date\", \"operands\":[{\"op\": \"timestamp\", \"operands\":[{\"input\": 1}]}]}]",
+        null);
+    createUDFMapEntry(UDF_MAP, hiveToCalciteOp("datediff"), 2, "date_diff",
+        "[{\"value\": 'day'}, {\"op\": \"date\", \"operands\":[{\"op\": \"timestamp\", \"operands\":[{\"input\": 2}]}]}, "
+            + "{\"op\": \"date\", \"operands\":[{\"op\": \"timestamp\", \"operands\":[{\"input\": 1}]}]}]",
+        null);
 
     // DALI functions
     // Most "com.linkedin..." UDFs follow convention of having UDF names mapped from their class name by converting
@@ -78,16 +94,20 @@ public class CalciteTrinoUDFMap {
     createUDFMapEntry(UDF_MAP, daliToCalciteOp("com.linkedin.stdudfs.parsing.hive.Ip2Str"), 3, "ip2str");
     createUDFMapEntry(UDF_MAP, daliToCalciteOp("com.linkedin.stdudfs.parsing.hive.UserAgentParser"), 2,
         "useragentparser");
+    createUDFMapEntry(UDF_MAP, daliToCalciteOp("com.linkedin.stdudfs.lookup.hive.BrowserLookup"), 3, "browserlookup");
+    createUDFMapEntry(UDF_MAP, daliToCalciteOp("com.linkedin.jobs.udf.hive.ConvertIndustryCode"), 1,
+        "converttoindustryv1");
+
     addDaliUDFs();
   }
 
   private static void addDaliUDFs() {
-    ImmutableMultimap<String, HiveFunction> registry = HIVE_REGISTRY.getRegistry();
+    ImmutableMultimap<String, Function> registry = HIVE_REGISTRY.getRegistry();
     Converter<String, String> caseConverter = CaseFormat.UPPER_CAMEL.converterTo(CaseFormat.LOWER_UNDERSCORE);
-    for (Map.Entry<String, HiveFunction> entry : registry.entries()) {
+    for (Map.Entry<String, Function> entry : registry.entries()) {
       // we cannot use entry.getKey() as function name directly, because keys are all lowercase, which will
       // fail to be converted to lowercase with underscore correctly
-      final String hiveFunctionName = entry.getValue().getHiveFunctionName();
+      final String hiveFunctionName = entry.getValue().getFunctionName();
       if (!hiveFunctionName.startsWith("com.linkedin")) {
         continue;
       }
@@ -123,7 +143,7 @@ public class CalciteTrinoUDFMap {
    * Looks up Hive functions using functionName case-insensitively.
    */
   private static SqlOperator hiveToCalciteOp(String functionName) {
-    Collection<HiveFunction> lookup = HIVE_REGISTRY.lookup(functionName);
+    Collection<Function> lookup = HIVE_REGISTRY.lookup(functionName);
     // TODO: provide overloaded function resolution
     return lookup.iterator().next().getSqlOperator();
   }

@@ -1,13 +1,15 @@
 /**
- * Copyright 2017-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2017-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
 package com.linkedin.coral.trino.rel2trino;
 
+import java.util.Map;
+
 import org.apache.calcite.rel.RelNode;
 
-import com.linkedin.coral.hive.hive2rel.HiveMetastoreClient;
+import com.linkedin.coral.common.HiveMetastoreClient;
 import com.linkedin.coral.hive.hive2rel.HiveToRelConverter;
 
 import static com.google.common.base.Preconditions.*;
@@ -20,8 +22,16 @@ public class HiveToTrinoConverter {
 
   public static HiveToTrinoConverter create(HiveMetastoreClient mscClient) {
     checkNotNull(mscClient);
-    HiveToRelConverter hiveToRelConverter = HiveToRelConverter.create(mscClient);
+    HiveToRelConverter hiveToRelConverter = new HiveToRelConverter(mscClient);
     RelToTrinoConverter relToTrinoConverter = new RelToTrinoConverter();
+    return new HiveToTrinoConverter(hiveToRelConverter, relToTrinoConverter);
+  }
+
+  public static HiveToTrinoConverter create(HiveMetastoreClient mscClient, Map<String, Boolean> configs) {
+    checkNotNull(mscClient);
+    checkNotNull(configs);
+    HiveToRelConverter hiveToRelConverter = new HiveToRelConverter(mscClient);
+    RelToTrinoConverter relToTrinoConverter = new RelToTrinoConverter(configs);
     return new HiveToTrinoConverter(hiveToRelConverter, relToTrinoConverter);
   }
 

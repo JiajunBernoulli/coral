@@ -1,19 +1,22 @@
 /**
- * Copyright 2017-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2017-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
 package com.linkedin.coral.hive.hive2rel;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 import com.google.common.collect.ImmutableList;
 
+import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.metastore.api.MetaException;
@@ -26,6 +29,7 @@ import org.apache.hadoop.hive.ql.session.SessionState;
 
 
 public class TestUtils {
+  public static final String CORAL_HIVE_TEST_DIR = "coral.hive.test.dir";
 
   static TestHive hive;
 
@@ -46,8 +50,8 @@ public class TestUtils {
         this.name = name;
         this.tables = ImmutableList.copyOf(tables);
       }
-      String name;
-      List<String> tables;
+      final String name;
+      final List<String> tables;
     }
 
     public List<String> getDbNames() {
@@ -55,7 +59,7 @@ public class TestUtils {
     }
 
     public List<String> getTables(String db) {
-      return databases.stream().filter(d -> d.name == db).findFirst()
+      return databases.stream().filter(d -> d.name.equals(db)).findFirst()
           .orElseThrow(() -> new RuntimeException("DB " + db + " not found")).tables;
     }
 
@@ -64,12 +68,13 @@ public class TestUtils {
     }
   }
 
-  public static TestHive setupDefaultHive() throws IOException {
+  public static TestHive setupDefaultHive(HiveConf conf) throws IOException {
     if (hive != null) {
       return hive;
     }
-    System.out.println(System.getProperty("java.io.tmpdir"));
-    HiveConf conf = loadResourceHiveConf();
+    String testDir = conf.get(CORAL_HIVE_TEST_DIR);
+    System.out.println("Test Workspace: " + testDir);
+    FileUtils.deleteDirectory(new File(testDir));
     TestHive testHive = new TestHive(conf);
     SessionState.start(conf);
     Driver driver = new Driver(conf);
@@ -92,6 +97,8 @@ public class TestUtils {
       driver.run("CREATE TABLE IF NOT EXISTS fuzzy_union.tableC(a int, b struct<b1:string>)");
       driver.run(
           "CREATE VIEW IF NOT EXISTS fuzzy_union.union_view_single_branch_evolved AS SELECT * from fuzzy_union.tableB union all SELECT * from fuzzy_union.tableC");
+      driver.run(
+          "CREATE VIEW IF NOT EXISTS fuzzy_union.union_view_in_from_clause AS SELECT a FROM (SELECT * FROM fuzzy_union.tableB UNION ALL SELECT * FROM fuzzy_union.tableC) t1 UNION ALL SELECT a FROM fuzzy_union.tableB t2");
       driver.run("ALTER TABLE fuzzy_union.tableC CHANGE COLUMN b b struct<b1:string, b2:int>");
 
       driver.run("CREATE TABLE IF NOT EXISTS fuzzy_union.tableD(a int, b struct<b1:string>)");
@@ -184,18 +191,24 @@ public class TestUtils {
       driver.run(
           "CREATE TABLE IF NOT EXISTS union_table(foo uniontype<int, double, array<string>, struct<a:int,b:string>>)");
 
-      testHive.databases =
-          ImmutableList.of(new TestHive.DB("test", ImmutableList.of("tableOne", "tableTwo", "tableOneView")),
-              new TestHive.DB("default",
-                  ImmutableList.of("bar", "complex", "foo", "foo_view", "null_check_view", "null_check_wrapper",
-                      "schema_evolve", "view_schema_evolve", "view_schema_evolve_wrapper", "union_table")),
-              new TestHive.DB("fuzzy_union",
-                  ImmutableList.of("tableA", "tableB", "tableC", "union_view", "union_view_with_more_than_two_tables",
-                      "union_view_with_alias", "union_view_single_branch_evolved",
-                      "union_view_double_branch_evolved_different", "union_view_map_with_struct_value_evolved",
-                      "union_view_array_with_struct_value_evolved", "union_view_deeply_nested_struct_evolved",
-                      "union_view_more_than_two_branches_evolved",
-                      "union_view_same_schema_evolution_with_different_ordering")));
+      // Nested union case.
+      // We don't put a union directly under a union since sources like https://avro.apache.org/docs/current/spec.html#Unions
+      // explicitly put that union cannot be directly nested under a union.
+      driver.run(
+          "CREATE TABLE IF NOT EXISTS nested_union(foo uniontype<int, double, struct<a:int, b:uniontype<int, double>>>)");
+
+      testHive.databases = ImmutableList.of(
+          new TestHive.DB("test", ImmutableList.of("tableOne", "tableTwo", "tableOneView")),
+          new TestHive.DB("default",
+              ImmutableList.of("bar", "complex", "foo", "foo_view", "null_check_view", "null_check_wrapper",
+                  "schema_evolve", "view_schema_evolve", "view_schema_evolve_wrapper", "union_table", "nested_union")),
+          new TestHive.DB("fuzzy_union",
+              ImmutableList.of("tableA", "tableB", "tableC", "union_view", "union_view_with_more_than_two_tables",
+                  "union_view_with_alias", "union_view_single_branch_evolved",
+                  "union_view_double_branch_evolved_different", "union_view_map_with_struct_value_evolved",
+                  "union_view_array_with_struct_value_evolved", "union_view_deeply_nested_struct_evolved",
+                  "union_view_more_than_two_branches_evolved",
+                  "union_view_same_schema_evolution_with_different_ordering")));
 
       // add some Dali functions to table properties
       IMetaStoreClient msc = testHive.getMetastoreClient();
@@ -224,7 +237,7 @@ public class TestUtils {
   static void setOrUpdateDaliFunction(Table table, String functionName, String functionClass) {
     table.setOwner("daliview");
     Map<String, String> parameters = table.getParameters();
-    String[] split = table.getParameters().getOrDefault("functions", new String()).split(" |:");
+    String[] split = table.getParameters().getOrDefault("functions", "").split(" |:");
     Map<String, String> functionMap = new HashMap<>();
     for (int i = 0; i < split.length - 1; i += 2) {
       functionMap.put(split[i], split[i + 1]);
@@ -239,6 +252,8 @@ public class TestUtils {
   public static HiveConf loadResourceHiveConf() {
     InputStream hiveConfStream = TestUtils.class.getClassLoader().getResourceAsStream("hive.xml");
     HiveConf hiveConf = new HiveConf();
+    hiveConf.set(CORAL_HIVE_TEST_DIR,
+        System.getProperty("java.io.tmpdir") + "/coral/hive/" + UUID.randomUUID().toString());
     hiveConf.addResource(hiveConfStream);
     hiveConf.set("mapreduce.framework.name", "local");
     hiveConf.set("_hive.hdfs.session.path", "/tmp/coral");

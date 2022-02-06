@@ -1,10 +1,12 @@
 /**
- * Copyright 2018-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2018-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
 package com.linkedin.coral.spark;
 
+import java.io.File;
+import java.io.IOException;
 import java.net.URI;
 import java.util.LinkedList;
 import java.util.List;
@@ -14,8 +16,11 @@ import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.sql.type.ReturnTypes;
 import org.apache.calcite.sql.type.SqlTypeFamily;
 import org.apache.calcite.sql.type.SqlTypeName;
+import org.apache.commons.io.FileUtils;
+import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
+import org.testng.annotations.AfterTest;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
@@ -26,13 +31,17 @@ import com.linkedin.coral.spark.exceptions.UnsupportedUDFException;
 
 import static org.apache.calcite.sql.type.OperandTypes.*;
 import static org.testng.Assert.*;
+import static org.testng.Assert.assertEquals;
 
 
 public class CoralSparkTest {
 
+  private HiveConf conf;
+
   @BeforeClass
-  public void beforeClass() throws HiveException, MetaException {
-    TestUtils.initializeViews();
+  public void beforeClass() throws HiveException, MetaException, IOException {
+    conf = TestUtils.loadResourceHiveConf();
+    TestUtils.initializeViews(conf);
 
     // add the following 3 test UDF to StaticHiveFunctionRegistry for testing purpose.
     StaticHiveFunctionRegistry.createAddUserDefinedFunction("com.linkedin.coral.hive.hive2rel.CoralTestUDF",
@@ -52,6 +61,11 @@ public class CoralSparkTest {
         "ivy://com.linkedin.coral.spark.CoralTestUDF", null);
   }
 
+  @AfterTest
+  public void afterClass() throws IOException {
+    FileUtils.deleteDirectory(new File(conf.get(TestUtils.CORAL_SPARK_TEST_DIR)));
+  }
+
   @Test
   public void testGetBaseTablesFromView() {
     RelNode relNode = TestUtils.toRelNode("default", "foo_bar_view");
@@ -63,9 +77,9 @@ public class CoralSparkTest {
 
   @Test
   public void testLiteralColumnsFromView() {
-    // [LIHADOOP-47172] use date literal in view definition
-    String targetSql =
-        String.join("\n", "SELECT '2013-01-01', '2017-08-22 01:02:03', 123, 123", "FROM default.foo", "LIMIT 1");
+    // use date literal in view definition
+    String targetSql = "SELECT '2013-01-01', '2017-08-22 01:02:03', CAST(123 AS SMALLINT), CAST(123 AS TINYINT)\n"
+        + "FROM default.foo\n" + "LIMIT 1";
     RelNode relNode = TestUtils.toRelNode("default", "foo_v1");
     CoralSpark coralSpark = CoralSpark.create(relNode);
     String expandedSql = coralSpark.getSparkSql();
@@ -109,7 +123,7 @@ public class CoralSparkTest {
     List<String> listOfUriStrings = convertToListOfUriStrings(udfJars.get(0).getArtifactoryUrls());
     String targetArtifactoryUrl = "ivy://com.linkedin.coral.spark.CoralTestUDF";
     assertTrue(listOfUriStrings.contains(targetArtifactoryUrl));
-    // LIHADOOP-48379: need to check the UDF type
+    // need to check the UDF type
     SparkUDFInfo.UDFTYPE testUdfType = udfJars.get(0).getUdfType();
     SparkUDFInfo.UDFTYPE targetUdfType = SparkUDFInfo.UDFTYPE.TRANSPORTABLE_UDF;
     assertEquals(testUdfType, targetUdfType);
@@ -133,11 +147,11 @@ public class CoralSparkTest {
     String udfFunctionName = udfJars.get(0).getFunctionName();
     String targetFunctionName = "default_foo_dali_udf2_GreaterThanHundred";
     assertEquals(udfFunctionName, targetFunctionName);
-    // LIHADOOP-48635: check if CoralSpark can fetch artifactory url from Dali View definition.
+    // check if CoralSpark can fetch artifactory url from Dali View definition.
     List<String> listOfUriStrings = convertToListOfUriStrings(udfJars.get(0).getArtifactoryUrls());
     String targetArtifactoryUrl = "ivy://com.linkedin:udf:1.0";
     assertTrue(listOfUriStrings.contains(targetArtifactoryUrl));
-    // LIHADOOP-48379: need to check the UDF type
+    // need to check the UDF type
     SparkUDFInfo.UDFTYPE testUdfType = udfJars.get(0).getUdfType();
     SparkUDFInfo.UDFTYPE targetUdfType = SparkUDFInfo.UDFTYPE.HIVE_CUSTOM_UDF;
     assertEquals(testUdfType, targetUdfType);
@@ -191,8 +205,8 @@ public class CoralSparkTest {
   public void testLateralView() {
     RelNode relNode = TestUtils.toRelNode(
         String.join("\n", "", "SELECT a, t.ccol", "FROM complex", "LATERAL VIEW explode(complex.c) t as ccol"));
-    String targetSql = String.join("\n", "SELECT complex.a, t1.ccol",
-        "FROM default.complex LATERAL VIEW EXPLODE(complex.c) t1 AS ccol");
+    String targetSql =
+        "SELECT complex.a, t0.ccol\n" + "FROM default.complex LATERAL VIEW EXPLODE(complex.c) t0 AS ccol";
     assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
   }
 
@@ -204,8 +218,8 @@ public class CoralSparkTest {
     System.out.println(relNodePlan);
     String convertToSparkSql = CoralSpark.create(relNode).getSparkSql();
 
-    String targetSql = String.join("\n", "SELECT complex.a, t1.ccol", "FROM default.complex " + "LATERAL VIEW OUTER "
-        + "EXPLODE(" + "if(complex.c IS NOT NULL AND size(complex.c) > 0, complex.c, ARRAY (NULL))" + ") t1 AS ccol");
+    String targetSql =
+        "SELECT complex.a, t0.ccol\n" + "FROM default.complex LATERAL VIEW OUTER EXPLODE(complex.c) t0 AS ccol";
     assertEquals(convertToSparkSql, targetSql);
   }
 
@@ -213,8 +227,8 @@ public class CoralSparkTest {
   public void testMultipleLateralView() {
     RelNode relNode = TestUtils.toRelNode(String.join("\n", "", "SELECT a, t.ccol, t2.ccol2", "FROM complex ",
         "LATERAL VIEW explode(complex.c) t AS ccol ", "LATERAL VIEW explode(complex.c) t2 AS ccol2 "));
-    String targetSql = String.join("\n", "SELECT complex.a, t1.ccol, t4.ccol2", "FROM default.complex "
-        + "LATERAL VIEW EXPLODE(complex.c) t1 AS ccol " + "LATERAL VIEW EXPLODE(complex.c) t4 AS ccol2");
+    String targetSql = "SELECT complex.a, t0.ccol, t2.ccol2\n"
+        + "FROM default.complex LATERAL VIEW EXPLODE(complex.c) t0 AS ccol LATERAL VIEW EXPLODE(complex.c) t2 AS ccol2";
     assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
   }
 
@@ -222,8 +236,8 @@ public class CoralSparkTest {
   public void testLateralViewMap() {
     RelNode relNode = TestUtils.toRelNode(String.join("\n", "", "SELECT a, t.ccol1, t.ccol2", "FROM complex",
         "LATERAL VIEW explode(complex.m) t as ccol1, ccol2"));
-    String targetSql = String.join("\n", "SELECT complex.a, t1.KEY ccol1, t1.VALUE ccol2",
-        "FROM default.complex LATERAL VIEW EXPLODE(complex.m) t1 AS KEY, VALUE");
+    String targetSql = "SELECT complex.a, t0.ccol1, t0.ccol2\n"
+        + "FROM default.complex LATERAL VIEW EXPLODE(complex.m) t0 AS ccol1, ccol2";
     assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
   }
 
@@ -231,8 +245,8 @@ public class CoralSparkTest {
   public void testLateralViewMapOuter() {
     RelNode relNode = TestUtils.toRelNode(String.join("\n", "", "SELECT a, t.ccol1, t.ccol2", "FROM complex",
         "LATERAL VIEW OUTER explode(complex.m) t as ccol1, ccol2"));
-    String targetSql = String.join("\n", "SELECT complex.a, t1.KEY ccol1, t1.VALUE ccol2",
-        "FROM default.complex LATERAL VIEW OUTER EXPLODE(if(complex.m IS NOT NULL AND size(complex.m) > 0, complex.m, MAP (NULL, NULL))) t1 AS KEY, VALUE");
+    String targetSql = "SELECT complex.a, t0.ccol1, t0.ccol2\n"
+        + "FROM default.complex LATERAL VIEW OUTER EXPLODE(complex.m) t0 AS ccol1, ccol2";
     assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
   }
 
@@ -285,7 +299,7 @@ public class CoralSparkTest {
     System.out.println(relNodePlan);
     String convertToSparkSql = CoralSpark.create(relNode).getSparkSql();
 
-    /*  [LIHADOOP-43199] the test query is translated to:
+    /*  the test query is translated to:
      *  SELECT named_struct('abc', 123, 'def', 'xyz') named_struc FROM default.bar;
      */
     String targetSql =
@@ -293,23 +307,20 @@ public class CoralSparkTest {
     assertEquals(convertToSparkSql, targetSql);
   }
 
-  /**
-   * Following Queries are not supported
-   */
-
-  @Test(expectedExceptions = IllegalStateException.class)
-  public void testLateralViewStarNotSupported() {
+  @Test
+  public void testLateralViewStar() {
     RelNode relNode = TestUtils
         .toRelNode(String.join("\n", "", "SELECT a, t.*", "FROM complex", "LATERAL VIEW explode(complex.c) t"));
-    CoralSpark.create(relNode);
+    String targetSql = "SELECT complex.a, t0.col\n" + "FROM default.complex LATERAL VIEW EXPLODE(complex.c) t0 AS col";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
   }
 
   @Test
   public void testLateralViewGroupBy() {
     RelNode relNode = TestUtils.toRelNode(String.join("\n", "", "SELECT adid, count(1)", "FROM complex",
         "LATERAL VIEW explode(c) t as adid", "GROUP BY adid"));
-    String targetSql = String.join("\n", "SELECT t1.adid, COUNT(*)",
-        "FROM default.complex LATERAL VIEW EXPLODE(complex.c) t1 AS adid", "GROUP BY t1.adid");
+    String targetSql = "SELECT t0.adid, COUNT(*)\n"
+        + "FROM default.complex LATERAL VIEW EXPLODE(complex.c) t0 AS adid\n" + "GROUP BY t0.adid";
     assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
   }
 
@@ -331,7 +342,7 @@ public class CoralSparkTest {
   public void testSelectSubstring() {
     RelNode relNode = TestUtils.toRelNode(String.join("\n", "", "SELECT substring(b,1,2)", "FROM complex"));
     // Default operator SqlSubstringFunction would generate SUBSTRING(b FROM 1 for 2)
-    String targetSql = String.join("\n", "SELECT SUBSTRING(b, 1, 2)", "FROM default.complex");
+    String targetSql = String.join("\n", "SELECT substr(b, 1, 2)", "FROM default.complex");
     assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
   }
 
@@ -345,6 +356,37 @@ public class CoralSparkTest {
   }
 
   @Test
+  public void testInterval() {
+    RelNode relNode = TestUtils.toRelNode("SELECT CAST('2021-08-31' AS DATE) + INTERVAL '7' DAY FROM default.complex");
+    String targetSql = "SELECT (CAST('2021-08-31' AS DATE) + INTERVAL '7' DAY)\n" + "FROM default.complex";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testIntervalNegative() {
+    RelNode relNode = TestUtils.toRelNode("SELECT CAST('2021-08-31' AS DATE) + INTERVAL '-7' DAY FROM default.complex");
+    String targetSql = "SELECT (CAST('2021-08-31' AS DATE) + INTERVAL '-7' DAY)\n" + "FROM default.complex";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testIntervalDayToSecond() {
+    RelNode relNode = TestUtils
+        .toRelNode("SELECT CAST('2021-08-31' AS DATE) + INTERVAL '7 01:02:03' DAY TO SECOND FROM default.complex");
+    String targetSql =
+        "SELECT (CAST('2021-08-31' AS DATE) + INTERVAL '7 01:02:03' DAY TO SECOND)\n" + "FROM default.complex";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testIntervalYearToMonth() {
+    RelNode relNode =
+        TestUtils.toRelNode("SELECT CAST('2021-08-31' AS DATE) + INTERVAL '1-6' YEAR TO MONTH FROM default.complex");
+    String targetSql = "SELECT (CAST('2021-08-31' AS DATE) + INTERVAL '1-6' YEAR TO MONTH)\n" + "FROM default.complex";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
   public void testSchemaPromotionView() {
     RelNode relNode = TestUtils.toRelNode(String.join("\n", "", "SELECT * ", "FROM view_schema_promotion_wrapper"));
     String targetSql = String.join("\n", "SELECT a, CAST(b AS ARRAY<INTEGER>) b", "FROM default.schema_promotion");
@@ -354,12 +396,24 @@ public class CoralSparkTest {
   @Test
   public void testUnionExtractUDF() {
     RelNode relNode = TestUtils.toRelNode("SELECT extract_union(foo) from union_table");
-    String targetSql = String.join("\n", "SELECT foo", "FROM default.union_table");
+    String targetSql = String.join("\n", "SELECT coalesce_struct(foo)", "FROM default.union_table");
     assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
 
-    RelNode relNode2 = TestUtils.toRelNode("SELECT extract_union(foo, 2) from union_table");
-    String targetSql2 = String.join("\n", "SELECT foo.tag_2", "FROM default.union_table");
+    RelNode relNode1 = TestUtils.toRelNode("SELECT extract_union(foo, 2) from union_table");
+    String targetSql1 = String.join("\n", "SELECT coalesce_struct(foo, 3)", "FROM default.union_table");
+    assertEquals(CoralSpark.create(relNode1).getSparkSql(), targetSql1);
+
+    // Nested union case
+    RelNode relNode2 = TestUtils.toRelNode("SELECT extract_union(a) from nested_union");
+    String targetSql2 = String.join("\n", "SELECT coalesce_struct(a)", "FROM default.nested_union");
     assertEquals(CoralSpark.create(relNode2).getSparkSql(), targetSql2);
+  }
+
+  @Test
+  public void testDateFunction() {
+    RelNode relNode = TestUtils.toRelNode("SELECT date('2021-01-02') as a FROM foo");
+    String targetSql = "SELECT date('2021-01-02') a\n" + "FROM default.foo";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
   }
 
   private List<String> convertToListOfUriStrings(List<URI> listOfUris) {
@@ -370,4 +424,307 @@ public class CoralSparkTest {
     return listOfUriStrings;
   }
 
+  @Test
+  public void testLateralViewArray() {
+    RelNode relNode = TestUtils
+        .toRelNode("SELECT col FROM (SELECT ARRAY('a1', 'a2') as a) tmp LATERAL VIEW EXPLODE(a) a_alias AS col");
+
+    String targetSql = "SELECT t2.col\n" + "FROM (SELECT ARRAY ('a1', 'a2') a\n"
+        + "FROM (VALUES  (0)) t (ZERO)) t0 LATERAL VIEW EXPLODE(t0.a) t2 AS col";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testLateralViewArray2() {
+    RelNode relNode =
+        TestUtils.toRelNode("SELECT arr.alias FROM foo tmp LATERAL VIEW EXPLODE(ARRAY('a', 'b')) arr as alias");
+
+    String targetSql = "SELECT t0.alias\n" + "FROM default.foo LATERAL VIEW EXPLODE(ARRAY ('a', 'b')) t0 AS alias";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testLateralViewArrayWithoutColumns() {
+    RelNode relNode =
+        TestUtils.toRelNode("SELECT col FROM (SELECT ARRAY('a1', 'a2') as a) tmp LATERAL VIEW EXPLODE(a) a_alias");
+
+    String targetSql = "SELECT t2.col\n" + "FROM (SELECT ARRAY ('a1', 'a2') a\n"
+        + "FROM (VALUES  (0)) t (ZERO)) t0 LATERAL VIEW EXPLODE(t0.a) t2 AS col";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testLateralViewMap2() {
+    RelNode relNode = TestUtils.toRelNode(
+        "SELECT key, value FROM (SELECT MAP('key1', 'value1') as m) tmp LATERAL VIEW EXPLODE(m) m_alias AS key, value");
+
+    String targetSql = "SELECT t2.key, t2.value\n" + "FROM (SELECT MAP ('key1', 'value1') m\n"
+        + "FROM (VALUES  (0)) t (ZERO)) t0 LATERAL VIEW EXPLODE(t0.m) t2 AS key, value";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testLateralViewMapRenameColumns() {
+    RelNode relNode = TestUtils.toRelNode(
+        "SELECT k1, v1 FROM (SELECT MAP('key1', 'value1') as m) tmp LATERAL VIEW EXPLODE(m) m_alias AS k1, v1");
+
+    String targetSql = "SELECT t2.k1, t2.v1\n" + "FROM (SELECT MAP ('key1', 'value1') m\n"
+        + "FROM (VALUES  (0)) t (ZERO)) t0 LATERAL VIEW EXPLODE(t0.m) t2 AS k1, v1";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testLateralViewMapWithoutColumns() {
+    RelNode relNode = TestUtils
+        .toRelNode("SELECT key, value FROM (SELECT MAP('key1', 'value1') as m) tmp LATERAL VIEW EXPLODE(m) m_alias");
+
+    String targetSql = "SELECT t2.KEY key, t2.VALUE value\n" + "FROM (SELECT MAP ('key1', 'value1') m\n"
+        + "FROM (VALUES  (0)) t (ZERO)) t0 LATERAL VIEW EXPLODE(t0.m) t2 AS KEY, VALUE";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testXpathFunctions() {
+    RelNode relNode = TestUtils.toRelNode("select xpath('<a><b>b1</b><b>b2</b></a>','a/*') FROM foo");
+    String targetSql = "SELECT xpath('<a><b>b1</b><b>b2</b></a>', 'a/*')\n" + "FROM default.foo";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+
+    relNode = TestUtils.toRelNode("SELECT xpath_string('<a><b>bb</b><c>cc</c></a>', 'a/b') FROM foo");
+    targetSql = "SELECT xpath_string('<a><b>bb</b><c>cc</c></a>', 'a/b')\n" + "FROM default.foo";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+
+    relNode = TestUtils.toRelNode("SELECT xpath_boolean('<a><b>b</b></a>', 'a/b') FROM foo");
+    targetSql = "SELECT xpath_boolean('<a><b>b</b></a>', 'a/b')\n" + "FROM default.foo";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+
+    relNode = TestUtils.toRelNode("SELECT xpath_int('<a>b</a>', 'a = 10') FROM foo");
+    targetSql = "SELECT xpath_int('<a>b</a>', 'a = 10')\n" + "FROM default.foo";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+
+    relNode = TestUtils.toRelNode("SELECT xpath_short('<a>b</a>', 'a = 10') FROM foo");
+    targetSql = "SELECT xpath_short('<a>b</a>', 'a = 10')\n" + "FROM default.foo";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+
+    relNode = TestUtils.toRelNode("SELECT xpath_long('<a>b</a>', 'a = 10') FROM foo");
+    targetSql = "SELECT xpath_long('<a>b</a>', 'a = 10')\n" + "FROM default.foo";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+
+    relNode = TestUtils.toRelNode("SELECT xpath_float('<a>b</a>', 'a = 10') FROM foo");
+    targetSql = "SELECT xpath_float('<a>b</a>', 'a = 10')\n" + "FROM default.foo";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+
+    relNode = TestUtils.toRelNode("SELECT xpath_double('<a>b</a>', 'a = 10') FROM foo");
+    targetSql = "SELECT xpath_double('<a>b</a>', 'a = 10')\n" + "FROM default.foo";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+
+    relNode = TestUtils.toRelNode("SELECT xpath_number('<a>b</a>', 'a = 10') FROM foo");
+    targetSql = "SELECT xpath_number('<a>b</a>', 'a = 10')\n" + "FROM default.foo";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testLateralViewPosExplodeWithColumns() {
+    RelNode relNode =
+        TestUtils.toRelNode("SELECT arr.alias FROM foo tmp LATERAL VIEW POSEXPLODE(ARRAY('a', 'b')) arr AS pos, alias");
+
+    String targetSql =
+        "SELECT t0.alias\n" + "FROM default.foo LATERAL VIEW POSEXPLODE(ARRAY ('a', 'b')) t0 AS pos, alias";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testLateralViewOuterPosExplodeWithColumns() {
+    RelNode relNode = TestUtils
+        .toRelNode("SELECT arr.alias FROM foo tmp LATERAL VIEW OUTER POSEXPLODE(ARRAY('a', 'b')) arr AS pos, alias");
+
+    String targetSql =
+        "SELECT t0.alias\n" + "FROM default.foo LATERAL VIEW OUTER POSEXPLODE(ARRAY ('a', 'b')) t0 AS pos, alias";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testLateralViewPosExplodeWithoutColumns() {
+    RelNode relNode = TestUtils.toRelNode("SELECT arr.col FROM foo tmp LATERAL VIEW POSEXPLODE(ARRAY('a', 'b')) arr");
+
+    String targetSql =
+        "SELECT t0.col\n" + "FROM default.foo LATERAL VIEW POSEXPLODE(ARRAY ('a', 'b')) t0 AS ORDINALITY, col";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testConcat() {
+    RelNode relNode = TestUtils.toRelNode("SELECT 'a' || 'b'");
+
+    String targetSql = "SELECT concat('a', 'b')\nFROM (VALUES  (0)) t (ZERO)";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+    RelNode relNode2 = TestUtils.toRelNode("SELECT 'a' || 'b' || 'c'");
+
+    String targetSql2 = "SELECT concat(concat('a', 'b'), 'c')\nFROM (VALUES  (0)) t (ZERO)";
+    assertEquals(CoralSpark.create(relNode2).getSparkSql(), targetSql2);
+  }
+
+  @Test
+  public void testIfWithNullAsSecondParameter() {
+    RelNode relNode = TestUtils.toRelNode("SELECT if(FALSE, NULL, named_struct('a', ''))");
+
+    String targetSql = "SELECT if(FALSE, NULL, named_struct('a', ''))\n" + "FROM (VALUES  (0)) t (ZERO)";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testIfWithNullAsThirdParameter() {
+    RelNode relNode = TestUtils.toRelNode("SELECT if(FALSE, named_struct('a', ''), NULL)");
+
+    String targetSql = "SELECT if(FALSE, named_struct('a', ''), NULL)\n" + "FROM (VALUES  (0)) t (ZERO)";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testMd5Function() {
+    RelNode relNode = TestUtils.toRelNode("SELECT md5('ABC') as a FROM foo");
+    String targetSql = "SELECT md5('ABC') a\n" + "FROM default.foo";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testShaFunction() {
+    RelNode relNode = TestUtils.toRelNode("SELECT sha1('ABC') as a FROM foo");
+    String targetSql = "SELECT sha1('ABC') a\n" + "FROM default.foo";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+
+    RelNode relNode2 = TestUtils.toRelNode("SELECT sha('ABC') as a FROM foo");
+    String targetSql2 = "SELECT sha('ABC') a\n" + "FROM default.foo";
+    assertEquals(CoralSpark.create(relNode2).getSparkSql(), targetSql2);
+  }
+
+  @Test
+  public void testCrc32Function() {
+    RelNode relNode = TestUtils.toRelNode("SELECT crc32('ABC') as a FROM foo");
+    String targetSql = "SELECT crc32('ABC') a\n" + "FROM default.foo";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testTranslateFunction() {
+    RelNode relNode = TestUtils.toRelNode("SELECT translate('aaa', 'a', 'b') FROM default.foo");
+    String targetSql = "SELECT TRANSLATE('aaa', 'a', 'b')\n" + "FROM default.foo";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testCastByTypeName() {
+    RelNode relNode = TestUtils.toRelNode(
+        "SELECT CAST(1 AS DOUBLE), CAST(1.5 AS INT), CAST(2.3 AS STRING), CAST(1631142817 AS TIMESTAMP), CAST('' AS BOOLEAN) FROM default.complex");
+    String targetSql =
+        "SELECT CAST(1 AS DOUBLE), CAST(1.5 AS INTEGER), CAST(2.3 AS STRING), CAST(1631142817 AS TIMESTAMP), CAST('' AS BOOLEAN)\n"
+            + "FROM default.complex";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testReflectFunction() {
+    RelNode relNode = TestUtils.toRelNode("SELECT reflect('java.lang.String', 'valueOf', 1) FROM default.complex");
+    String targetSql = "SELECT reflect('java.lang.String', 'valueOf', 1)\n" + "FROM default.complex";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testReflectFunctionReturnType() {
+    RelNode relNode = TestUtils.toRelNode("SELECT reflect('java.lang.String', 'valueOf', 1) + 1 FROM default.complex");
+    String targetSql =
+        "SELECT CAST(reflect('java.lang.String', 'valueOf', 1) AS INTEGER) + 1\n" + "FROM default.complex";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+
+    relNode = TestUtils.toRelNode("SELECT reflect('java.lang.String', 'valueOf', 1) || 'a' FROM default.complex");
+    targetSql = "SELECT concat(reflect('java.lang.String', 'valueOf', 1), 'a')\n" + "FROM default.complex";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testJavaMethodFunction() {
+    RelNode relNode = TestUtils.toRelNode("SELECT java_method('java.lang.String', 'valueOf', 1) FROM default.complex");
+    String targetSql = "SELECT reflect('java.lang.String', 'valueOf', 1)\n" + "FROM default.complex";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testJavaMethodFunctionReturnType() {
+    RelNode relNode =
+        TestUtils.toRelNode("SELECT java_method('java.lang.String', 'valueOf', 1) + 1 FROM default.complex");
+    String targetSql =
+        "SELECT CAST(reflect('java.lang.String', 'valueOf', 1) AS INTEGER) + 1\n" + "FROM default.complex";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+
+    relNode = TestUtils.toRelNode("SELECT java_method('java.lang.String', 'valueOf', 1) || 'a' FROM default.complex");
+    targetSql = "SELECT concat(reflect('java.lang.String', 'valueOf', 1), 'a')\n" + "FROM default.complex";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testNegationOperator() {
+    RelNode relNode = TestUtils.toRelNode("SELECT !FALSE as a FROM foo");
+    String targetSql = "SELECT NOT FALSE a\n" + "FROM default.foo";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testAliasOrderBy() {
+    RelNode relNode =
+        TestUtils.toRelNode("SELECT a, SUBSTR(b, 1, 1) AS aliased_column, c FROM foo ORDER BY aliased_column DESC");
+    String targetSql = "SELECT a, substr(b, 1, 1) aliased_column, c\n" + "FROM default.foo\n"
+        + "ORDER BY substr(b, 1, 1) DESC NULLS LAST";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testAliasHaving() {
+    RelNode relNode = TestUtils.toRelNode(
+        "SELECT a, SUBSTR(b, 1, 1) AS aliased_column FROM foo GROUP BY a, b HAVING aliased_column in ('dummy_value')");
+    String targetSql = "SELECT a, substr(b, 1, 1) aliased_column\n" + "FROM default.foo\n" + "GROUP BY a, b\n"
+        + "HAVING substr(b, 1, 1)\n" + "IN ('dummy_value')";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testCastDecimal() {
+    RelNode relNode = TestUtils.toRelNode("SELECT CAST(a as DECIMAL(6, 2)) as casted_decimal FROM default.foo");
+    String targetSql = "SELECT CAST(a AS DECIMAL(6, 2)) casted_decimal\n" + "FROM default.foo";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testCastDecimalDefault() {
+    RelNode relNode = TestUtils.toRelNode("SELECT CAST(a as DECIMAL) as casted_decimal FROM default.foo");
+    String targetSql = "SELECT CAST(a AS DECIMAL(10, 0)) casted_decimal\n" + "FROM default.foo";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testCollectListFunction() {
+    RelNode relNode = TestUtils.toRelNode("SELECT collect_list(a) FROM default.foo");
+    String targetSql = "SELECT collect_list(a)\n" + "FROM default.foo";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testCollectSetFunction() {
+    RelNode relNode = TestUtils.toRelNode("SELECT collect_set(a) FROM default.foo");
+    String targetSql = "SELECT collect_set(a)\n" + "FROM default.foo";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testSelectArrayIndex() {
+    RelNode relNode = TestUtils.toRelNode("SELECT * FROM default.view_expand_array_index");
+    String targetSql = "SELECT c[1] c1\n" + "FROM default.complex";
+    assertEquals(CoralSpark.create(relNode).getSparkSql(), targetSql);
+  }
+
+  @Test
+  public void testDeduplicateUdf() {
+    RelNode relNode = TestUtils.toRelNode("default", "foo_duplicate_udf");
+    CoralSpark coralSpark = CoralSpark.create(relNode);
+    List<SparkUDFInfo> udfJars = coralSpark.getSparkUDFInfoList();
+    assertEquals(1, udfJars.size());
+  }
 }

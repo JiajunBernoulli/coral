@@ -348,6 +348,7 @@ DIV : 'DIV';
 AMPERSAND : '&';
 TILDE : '~';
 BITWISEOR : '|';
+CONCATENATE : '||';
 BITWISEXOR : '^';
 QUESTION : '?';
 DOLLAR : '$';
@@ -471,5 +472,7 @@ WS  :  (' '|'\r'|'\t'|'\n') {$channel=HIDDEN;}
 
 COMMENT
   : '--' (~('\n'|'\r'))*
+    { $channel=HIDDEN; }
+  | '/*' (options { greedy=false; } : .)* '*/'
     { $channel=HIDDEN; }
   ;

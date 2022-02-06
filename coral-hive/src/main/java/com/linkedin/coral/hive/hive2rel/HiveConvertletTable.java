@@ -1,5 +1,5 @@
 /**
- * Copyright 2018-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2018-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -14,10 +14,8 @@ import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.sql.SqlCall;
 import org.apache.calcite.sql.SqlDataTypeSpec;
-import org.apache.calcite.sql.SqlLiteral;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlNodeList;
-import org.apache.calcite.sql.SqlUtil;
 import org.apache.calcite.sql.fun.SqlCastFunction;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql2rel.ReflectiveConvertletTable;
@@ -26,7 +24,7 @@ import org.apache.calcite.sql2rel.SqlRexConvertlet;
 import org.apache.calcite.sql2rel.StandardConvertletTable;
 
 import com.linkedin.coral.com.google.common.collect.ImmutableList;
-import com.linkedin.coral.hive.hive2rel.functions.FunctionFieldReferenceOperator;
+import com.linkedin.coral.common.functions.FunctionFieldReferenceOperator;
 import com.linkedin.coral.hive.hive2rel.functions.HiveInOperator;
 import com.linkedin.coral.hive.hive2rel.functions.HiveNamedStructFunction;
 
@@ -74,16 +72,12 @@ public class HiveConvertletTable extends ReflectiveConvertletTable {
   @SuppressWarnings("unused")
   public RexNode convertCast(SqlRexContext cx, SqlCastFunction cast, SqlCall call) {
     final SqlNode left = call.operand(0);
-    if (SqlUtil.isNullLiteral(left, false)) {
-      RexNode leftRex = cx.convertLiteral((SqlLiteral) left);
-      SqlDataTypeSpec dataType = call.operand(1);
-      RelDataType castType = dataType.deriveType(cx.getValidator(), true);
-      // can not call RexBuilder.makeCast() since that optimizes to remove the cast
-      // we don't want to remove the cast
-      return cx.getRexBuilder().makeAbstractCast(castType, leftRex);
-    }
-    // this is odd but we want to re-use as much code from calcite as possible
-    return StandardConvertletTable.INSTANCE.get(call).convertCall(cx, call);
+    RexNode leftRex = cx.convertExpression(left);
+    SqlDataTypeSpec dataType = call.operand(1);
+    RelDataType castType = dataType.deriveType(cx.getValidator(), true);
+    // can not call RexBuilder.makeCast() since that optimizes to remove the cast
+    // we don't want to remove the cast
+    return cx.getRexBuilder().makeAbstractCast(castType, leftRex);
   }
 
   @Override

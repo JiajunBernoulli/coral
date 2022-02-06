@@ -1,13 +1,16 @@
 /**
- * Copyright 2019-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2019-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
 package com.linkedin.coral.trino.rel2trino.functions;
 
 import java.util.ArrayList;
+import java.util.Deque;
+import java.util.LinkedList;
 import java.util.List;
 
+import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeField;
 import org.apache.calcite.rel.type.RelRecordType;
@@ -15,6 +18,7 @@ import org.apache.calcite.rex.RexBuilder;
 import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexInputRef;
 import org.apache.calcite.rex.RexLiteral;
+import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.type.ArraySqlType;
 import org.apache.calcite.sql.type.MapSqlType;
@@ -110,9 +114,10 @@ public class GenericProjectToTrinoConverter {
    *     - N/A
    * @param builder RexBuilder for the call
    * @param call a GenericProject call
+   * @param node parent relNode of call
    * @return a Trino UDF call equivalent for the given GenericProject call
    */
-  public static RexCall convertGenericProject(RexBuilder builder, RexCall call) {
+  public static RexCall convertGenericProject(RexBuilder builder, RexCall call, RelNode node) {
     // We build a RexCall to a UDF based on the outermost return type.
     // Although other transformations may be necessary, we do not recursively build RexCalls.
     // Instead, we represent these nested transformations as an input string to the top level RexCall.
@@ -180,9 +185,35 @@ public class GenericProjectToTrinoConverter {
     //           [RexLiteral: 'col1, (k, v) -> transform(v , x -> cast(row(x.a) as row(a int)))']
     // The resolved SQL string will look like:
     //   'transform_values(col1, (k, v) -> transform(v , x -> cast(row(x.a) as row(a int))))'
-    RexInputRef transformColumn = (RexInputRef) call.getOperands().get(0);
+
     RexLiteral columnNameLiteral = (RexLiteral) call.getOperands().get(1);
     String transformColumnFieldName = RexLiteral.stringValue(columnNameLiteral);
+    final RexNode transformColumn = call.getOperands().get(0);
+
+    // `transformColumnFieldName` could be the column name in an intermediate view, which might be different
+    // from the base table's column name because of the alias operation. In this case, the translated SQL couldn't be resolved.
+    // Therefore, we add the following `if` block to reset `transformColumnFieldName` if necessary.
+    // It traverses the base nodes, and if the column type on the corresponding index equals to the type of `transformColumn`
+    // but the column name is different from `transformColumnFieldName`, we reset `transformColumnFieldName`
+    // Corresponding unit test is `HiveToTrinoConverterTest#testResetTransformColumnFieldNameForGenericProject`
+    if (transformColumn instanceof RexInputRef) {
+      int columnIndexInBaseTable = ((RexInputRef) transformColumn).getIndex();
+      Deque<RelNode> nodeDeque = new LinkedList<>(node.getInputs());
+      while (!nodeDeque.isEmpty()) {
+        RelNode currentNode = nodeDeque.pollFirst();
+        final List<RelDataTypeField> fieldList = currentNode.getRowType().getFieldList();
+        if (columnIndexInBaseTable < fieldList.size()) {
+          final RelDataTypeField relDataTypeField = fieldList.get(columnIndexInBaseTable);
+          if (relDataTypeField.getType() == transformColumn.getType()
+              && !transformColumnFieldName.equalsIgnoreCase(relDataTypeField.getName())) {
+            transformColumnFieldName = relDataTypeField.getName();
+            break;
+          }
+        }
+        nodeDeque.addAll(currentNode.getInputs());
+      }
+    }
+
     RelDataType fromDataType = transformColumn.getType();
     RelDataType toDataType = call.getOperator().inferReturnType(null);
     switch (toDataType.getSqlTypeName()) {
@@ -348,7 +379,9 @@ public class GenericProjectToTrinoConverter {
         throw new RuntimeException(
             String.format("Field %s was not found in column %s.", toDataTypeField.getName(), fieldNameReference));
       }
-      String fromDataTypeFieldName = String.join(".", fieldNameReference, fromDataTypeField.getName());
+      String fromDataTypeFieldName =
+          String.format("%s.%s", TrinoKeywordsConverter.quoteWordIfNotQuoted(fieldNameReference),
+              TrinoKeywordsConverter.quoteWordIfNotQuoted(fromDataTypeField.getName()));
       structSelectedFieldStrings.add(
           relDataTypeFieldAccessString(fromDataTypeField.getType(), toDataTypeField.getType(), fromDataTypeFieldName));
     }

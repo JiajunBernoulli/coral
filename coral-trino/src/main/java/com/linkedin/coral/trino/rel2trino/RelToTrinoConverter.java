@@ -1,5 +1,5 @@
 /**
- * Copyright 2017-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2017-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -7,9 +7,12 @@ package com.linkedin.coral.trino.rel2trino;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+
+import com.google.common.collect.ImmutableMap;
 
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.*;
@@ -18,6 +21,7 @@ import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeField;
 import org.apache.calcite.rel.type.RelDataTypeFieldImpl;
 import org.apache.calcite.rel.type.RelRecordType;
+import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexLiteral;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.sql.*;
@@ -31,10 +35,27 @@ import com.linkedin.coral.com.google.common.collect.ImmutableList;
 import com.linkedin.coral.hive.hive2rel.rel.HiveUncollect;
 import com.linkedin.coral.trino.rel2trino.functions.TrinoArrayTransformFunction;
 
+import static com.google.common.base.Preconditions.*;
 import static com.linkedin.coral.trino.rel2trino.Calcite2TrinoUDFConverter.convertRel;
+import static com.linkedin.coral.trino.rel2trino.CoralTrinoConfigKeys.*;
 
 
 public class RelToTrinoConverter extends RelToSqlConverter {
+
+  /**
+   * We introduce this configuration for LinkedIn's internal use since our Trino is extending the following legacy/internal supports:
+   * (1) Unnest array of struct, refer to https://github.com/linkedin/coral/pull/93#issuecomment-912698600 for more information.
+   *     If the value of key {@link CoralTrinoConfigKeys#SUPPORT_LEGACY_UNNEST_ARRAY_OF_STRUCT} is set to true, we don't add extra ROW
+   *     wrapping in {@link RelToTrinoConverter#visit(Uncollect)}
+   * (2) Some internally registered UDFs which should not be converted, like `to_date`.
+   *     If the value of key {@link CoralTrinoConfigKeys#AVOID_TRANSFORM_TO_DATE_UDF} is set to true, we don't transform `to_date` UDF
+   *     in {@link com.linkedin.coral.trino.rel2trino.Calcite2TrinoUDFConverter.TrinoRexConverter#visitCall(RexCall)}
+   * (3) We need to adjust the return type for some functions using cast, since the converted Trino function's return type is not
+   *     aligned with the Hive function's return type. For example, if the value of key {@link CoralTrinoConfigKeys#CAST_DATEADD_TO_STRING}
+   *     is set to true, we would cast the converted RexCall to `varchar` type (date_add(xxx) -> cast(date_add(xxx) as varchar))
+   * For uses outside LinkedIn, just ignore this configuration.
+   */
+  private Map<String, Boolean> configs = new HashMap<>();
 
   /**
    * Creates a RelToTrinoConverter.
@@ -43,13 +64,19 @@ public class RelToTrinoConverter extends RelToSqlConverter {
     super(TrinoSqlDialect.INSTANCE);
   }
 
+  public RelToTrinoConverter(Map<String, Boolean> configs) {
+    super(TrinoSqlDialect.INSTANCE);
+    checkNotNull(configs);
+    this.configs = configs;
+  }
+
   /**
    * Convert relational algebra to Trino's SQL
    * @param relNode calcite relational algebra representation of SQL
    * @return SQL string
    */
   public String convert(RelNode relNode) {
-    RelNode rel = convertRel(relNode);
+    RelNode rel = convertRel(relNode, configs);
     return convertToSqlNode(rel).accept(new TrinoSqlRewriter()).toSqlString(TrinoSqlDialect.INSTANCE).toString();
   }
 
@@ -90,7 +117,7 @@ public class RelToTrinoConverter extends RelToSqlConverter {
 
   @Override
   public void addSelect(List<SqlNode> selectList, SqlNode node, RelDataType rowType) {
-    // APA-7366 Override this method from parent class RelToSqlConverter to always add "as"
+    // Override this method from parent class RelToSqlConverter to always add "as"
     // when accessing nested struct.
     // In parent class "as" is skipped for "select a.b as b", here we will keep the "a.b as b"
     SqlNode selectNode = node;
@@ -122,7 +149,8 @@ public class RelToTrinoConverter extends RelToSqlConverter {
     // Build <unnestColumns>
     final List<SqlNode> unnestOperands = new ArrayList<>();
     for (RexNode unnestCol : ((Project) e.getInput()).getChildExps()) {
-      if (e instanceof HiveUncollect && unnestCol.getType().getSqlTypeName().equals(SqlTypeName.ARRAY)
+      if (!configs.getOrDefault(SUPPORT_LEGACY_UNNEST_ARRAY_OF_STRUCT, false) && e instanceof HiveUncollect
+          && unnestCol.getType().getSqlTypeName().equals(SqlTypeName.ARRAY)
           && unnestCol.getType().getComponentType().getSqlTypeName().equals(SqlTypeName.ROW)) {
 
         // wrapper Record type with single column.
@@ -162,14 +190,20 @@ public class RelToTrinoConverter extends RelToSqlConverter {
       }
     }
 
-    // Build UNNEST(<unnestColumns>)
-    final SqlNode unnestNode = SqlStdOperatorTable.UNNEST.createCall(POS, unnestOperands);
+    // Build UNNEST(<unnestColumns>) or UNNEST(<unnestColumns>) WITH ORDINALITY
+    final SqlNode unnestNode =
+        (e.withOrdinality ? SqlStdOperatorTable.UNNEST_WITH_ORDINALITY : SqlStdOperatorTable.UNNEST).createCall(POS,
+            unnestOperands);
 
-    // Build UNNEST(<unnestColumns>) AS <alias>(<columnList>)
+    // Build UNNEST(<unnestColumns>) (WITH ORDINALITY) AS <alias>(<columnList>)
     final List<SqlNode> asOperands = createAsFullOperands(e.getRowType(), unnestNode, x.neededAlias);
     final SqlNode asNode = SqlStdOperatorTable.AS.createCall(POS, asOperands);
 
-    return result(asNode, ImmutableList.of(Clause.FROM), e, null);
+    // Reuse the same x.neededAlias since that's already unique by directly calling "new Result(...)"
+    // instead of calling super.result(...), which will generate a new table alias and cause an extra
+    // "AS" to be added to the generated SQL statement and make it invalid.
+    return new Result(asNode, ImmutableList.of(Clause.FROM), null, e.getRowType(),
+        ImmutableMap.of(x.neededAlias, e.getRowType()));
   }
 
   /**
@@ -222,8 +256,11 @@ public class RelToTrinoConverter extends RelToSqlConverter {
     parseCorrelTable(e, leftResult);
     final Result rightResult = visitChild(1, e.getRight());
     SqlNode rightLateral = rightResult.node;
-    rightLateral = SqlStdOperatorTable.LATERAL.createCall(POS, rightLateral);
     if (rightLateral.getKind() != SqlKind.AS) {
+      // LATERAL is only needed in Trino if it's not an AS node.
+      // For example, "FROM t0 CROSS JOIN UNNEST(yyy) AS t1(col1, col2)" is valid Trino SQL
+      // without the need of LATERAL keywords.
+      rightLateral = SqlStdOperatorTable.LATERAL.createCall(POS, rightLateral);
       rightLateral =
           SqlStdOperatorTable.AS.createCall(POS, rightLateral, new SqlIdentifier(rightResult.neededAlias, POS));
     }

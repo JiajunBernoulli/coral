@@ -1,5 +1,5 @@
 /**
- * Copyright 2018-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2018-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -11,6 +11,8 @@ import java.util.stream.Collectors;
 import org.apache.calcite.plan.RelOptTable;
 import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.rel.RelNode;
+import org.apache.calcite.rel.rel2sql.SqlImplementor;
+import org.apache.calcite.sql.SqlNode;
 
 import com.linkedin.coral.spark.containers.SparkRelInfo;
 import com.linkedin.coral.spark.containers.SparkUDFInfo;
@@ -32,14 +34,11 @@ import com.linkedin.coral.spark.dialect.SparkSqlDialect;
  */
 public class CoralSpark {
 
-  private RelNode sparkRelNode;
-  private List<String> baseTables;
-  private List<SparkUDFInfo> sparkUDFInfoList;
-  private String sparkSql;
+  private final List<String> baseTables;
+  private final List<SparkUDFInfo> sparkUDFInfoList;
+  private final String sparkSql;
 
-  private CoralSpark(RelNode sparkRelNode, List<String> baseTables, List<SparkUDFInfo> sparkUDFInfoList,
-      String sparkSql) {
-    this.sparkRelNode = sparkRelNode;
+  private CoralSpark(List<String> baseTables, List<SparkUDFInfo> sparkUDFInfoList, String sparkSql) {
     this.baseTables = baseTables;
     this.sparkUDFInfoList = sparkUDFInfoList;
     this.sparkSql = sparkSql;
@@ -65,7 +64,7 @@ public class CoralSpark {
     String sparkSQL = constructSparkSQL(sparkRelNode);
     List<String> baseTables = constructBaseTables(sparkRelNode);
     List<SparkUDFInfo> sparkUDFInfos = sparkRelInfo.getSparkUDFInfoList();
-    return new CoralSpark(sparkRelNode, baseTables, sparkUDFInfos, sparkSQL);
+    return new CoralSpark(baseTables, sparkUDFInfos, sparkSQL);
   }
 
   /**
@@ -84,8 +83,10 @@ public class CoralSpark {
    */
   private static String constructSparkSQL(RelNode sparkRelNode) {
     SparkRelToSparkSqlConverter rel2sql = new SparkRelToSparkSqlConverter();
-    return rel2sql.visitChild(0, sparkRelNode).asStatement().accept(new SparkSqlRewriter())
-        .toSqlString(SparkSqlDialect.INSTANCE).getSql();
+    // Create temporary objects r and rewritten to make debugging easier
+    SqlImplementor.Result r = rel2sql.visitChild(0, sparkRelNode);
+    SqlNode rewritten = r.asStatement().accept(new SparkSqlRewriter());
+    return rewritten.toSqlString(SparkSqlDialect.INSTANCE).getSql();
   }
 
   /**

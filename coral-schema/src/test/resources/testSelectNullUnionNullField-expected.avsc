@@ -4,6 +4,7 @@
   "namespace" : "default.v",
   "fields" : [ {
     "name" : "Null_Field",
-    "type" : "null"
+    "type" : "null",
+    "doc" : "Field created from view literal with value: null"
   } ]
 }

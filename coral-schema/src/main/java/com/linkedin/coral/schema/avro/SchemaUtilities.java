@@ -1,15 +1,13 @@
 /**
- * Copyright 2019-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2019-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
 package com.linkedin.coral.schema.avro;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -20,10 +18,16 @@ import com.google.common.annotations.VisibleForTesting;
 
 import org.apache.avro.Schema;
 import org.apache.avro.SchemaBuilder;
+import org.apache.calcite.rel.RelNode;
+import org.apache.calcite.rel.core.AggregateCall;
+import org.apache.calcite.rel.logical.LogicalAggregate;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexInputRef;
+import org.apache.calcite.rex.RexLiteral;
 import org.apache.calcite.rex.RexNode;
+import org.apache.calcite.sql.SqlKind;
+import org.apache.calcite.sql.validate.SqlUserDefinedFunction;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.Table;
@@ -39,14 +43,18 @@ import com.linkedin.coral.com.google.common.base.Preconditions;
 import com.linkedin.coral.com.google.common.base.Strings;
 import com.linkedin.coral.schema.avro.exceptions.SchemaNotFoundException;
 
+import static com.linkedin.coral.schema.avro.AvroSerdeUtils.*;
 import static org.apache.avro.Schema.Type.NULL;
-import static org.apache.hadoop.hive.serde2.avro.AvroSerdeUtils.getOtherTypeFromNullableType;
-import static org.apache.hadoop.hive.serde2.avro.AvroSerdeUtils.isNullableType;
 
 
 class SchemaUtilities {
   private static final Logger LOG = LoggerFactory.getLogger(SchemaUtilities.class);
   private static final String DALI_ROW_SCHEMA = "dali.row.schema";
+
+  // TODO: 2/2/22 Needs to refactor this into a separate registry class
+  // if the num of functions in this set get bigger
+  private static final Set<String> USE_CALCITE_NULLABILITY_FUNCS =
+      Collections.unmodifiableSet(new HashSet<>(Arrays.asList("extract_union")));
 
   // private constructor for utility class
   private SchemaUtilities() {
@@ -110,9 +118,8 @@ class SchemaUtilities {
         Schema finalTableSchema;
 
         // Add partition column if table partitioned
-        final List<FieldSchema> cols = new ArrayList<>();
 
-        cols.addAll(table.getSd().getCols());
+        final List<FieldSchema> cols = new ArrayList<>(table.getSd().getCols());
         if (isPartitioned(table)) {
           cols.addAll(getPartitionCols(table));
         }
@@ -129,9 +136,7 @@ class SchemaUtilities {
     String recordName = table.getTableName();
     String recordNamespace = table.getDbName() + "." + recordName;
 
-    final List<FieldSchema> cols = new ArrayList<>();
-
-    cols.addAll(table.getSd().getCols());
+    final List<FieldSchema> cols = new ArrayList<>(table.getSd().getCols());
     if (isPartitioned(table)) {
       cols.addAll(getPartitionCols(table));
     }
@@ -196,7 +201,7 @@ class SchemaUtilities {
    * @param fieldAssembler
    */
   static void appendField(@Nonnull String fieldName, @Nonnull RelDataType fieldRelDataType, @Nullable String doc,
-      @Nonnull SchemaBuilder.FieldAssembler<Schema> fieldAssembler, @Nonnull boolean isNullable) {
+      @Nonnull SchemaBuilder.FieldAssembler<Schema> fieldAssembler, boolean isNullable) {
     Preconditions.checkNotNull(fieldName);
     Preconditions.checkNotNull(fieldRelDataType);
     Preconditions.checkNotNull(fieldAssembler);
@@ -215,6 +220,12 @@ class SchemaUtilities {
   static boolean isFieldNullable(@Nonnull RexCall rexCall, @Nonnull Schema inputSchema) {
     Preconditions.checkNotNull(rexCall);
     Preconditions.checkNotNull(inputSchema);
+
+    // we first filter against these static list of functions, whose nullability should be
+    // determined by calcite rather than avro.schema.literal
+    if (USE_CALCITE_NULLABILITY_FUNCS.contains(rexCall.getOperator().getName().toLowerCase())) {
+      return rexCall.getType().isNullable();
+    }
 
     // the field is non-nullable only if all operands are RexInputRef
     // and corresponding field schema type of RexInputRef index is not UNION
@@ -270,6 +281,63 @@ class SchemaUtilities {
     return newName;
   }
 
+  private static String getLiteralValueAsString(@Nonnull RexLiteral rexLiteral) {
+    StringWriter documentationWriter = new StringWriter();
+    PrintWriter printWriter = new PrintWriter(documentationWriter);
+
+    rexLiteral.printAsJava(printWriter);
+    printWriter.flush();
+
+    return documentationWriter.toString();
+  }
+
+  /**
+   * Given an input {@link RelNode} and the index of a field in the {@link RelNode}'s corresponding Avro schema,
+   * determine if the field with the specified index is a column from a table.
+   * @param fieldIndex the index of a field in the <code>inputRelNode</code>'s corresponding Avro schema
+   * @param inputRelNode the input {@link RelNode}
+   * @return true if the field at <code>fieldIndex</code> is a column from a table
+   */
+  private static boolean isColumn(int fieldIndex, @Nonnull RelNode inputRelNode) {
+    return !(inputRelNode instanceof LogicalAggregate)
+        || fieldIndex < ((LogicalAggregate) inputRelNode).getGroupSet().cardinality();
+  }
+
+  static String generateDocumentationForLiteral(@Nonnull RexLiteral rexLiteral) {
+    return "Field created from view literal with value: " + getLiteralValueAsString(rexLiteral);
+  }
+
+  static String generateDocumentationForAggregate(@Nonnull AggregateCall aggregateCall) {
+    return "Field created in view by applying aggregate function of type: " + aggregateCall.getAggregation().getKind();
+  }
+
+  static String generateDocumentationForFunctionCall(@Nonnull RexCall rexCall, @Nonnull Schema inputSchema,
+      @Nonnull RelNode inputRelNode) {
+    StringJoiner args = new StringJoiner(", ");
+
+    for (RexNode rexNode : rexCall.getOperands()) {
+      SqlKind nodeKind = rexNode.getKind();
+      switch (nodeKind) {
+        case LITERAL:
+          args.add(getLiteralValueAsString((RexLiteral) rexNode));
+          break;
+        case INPUT_REF:
+          int fieldIndex = ((RexInputRef) rexNode).getIndex();
+          if (isColumn(fieldIndex, inputRelNode)) {
+            args.add(inputSchema.getFullName() + "." + inputSchema.getFields().get(fieldIndex).name());
+            break;
+          }
+        default:
+          args.add("value with type " + rexNode.getType().toString());
+          break;
+      }
+    }
+
+    String functionType = rexCall.getOperator() instanceof SqlUserDefinedFunction ? "UDF" : "operator";
+    return "Field created in view by applying " + functionType + " '" + rexCall.getOperator().getName() + "'"
+        + (args.length() > 0 ? " with argument(s): " + args : "");
+  }
+
   static String toAvroQualifiedName(@Nonnull String name) {
     Preconditions.checkNotNull(name);
     return name.replace("$", "_");
@@ -279,10 +347,6 @@ class SchemaUtilities {
     Preconditions.checkNotNull(tableOrView);
 
     List<FieldSchema> partitionColumns = getPartitionCols(tableOrView);
-
-    if (partitionColumns == null) {
-      return false;
-    }
 
     return (partitionColumns.size() != 0);
   }
@@ -328,7 +392,7 @@ class SchemaUtilities {
     }
 
     Schema partitionColumnsSchema =
-        convertFieldSchemaToAvroSchema("partitionCols", "partitionCols", false, tableOrView.getPartitionKeys());
+        convertFieldSchemaToAvroSchema("partitionCols", "partitionCols", true, tableOrView.getPartitionKeys());
 
     List<Schema.Field> fieldsWithPartitionColumns = cloneFieldList(schema.getFields());
     fieldsWithPartitionColumns.addAll(cloneFieldList(partitionColumnsSchema.getFields(), true));
@@ -604,16 +668,12 @@ class SchemaUtilities {
           appendField(field, fieldAssembler);
           break;
         case MAP:
-          Schema newMapFieldSchema = setupNestedNamespace(field.schema(), nestedNamespace);
-          Schema.Field newMapField =
-              new Schema.Field(field.name(), newMapFieldSchema, field.doc(), field.defaultValue(), field.order());
-          appendField(newMapField, fieldAssembler);
-          break;
+        case UNION:
         case ARRAY:
-          Schema newArrayFieldSchema = setupNestedNamespace(field.schema(), nestedNamespace);
-          Schema.Field newArrayField =
-              new Schema.Field(field.name(), newArrayFieldSchema, field.doc(), field.defaultValue(), field.order());
-          appendField(newArrayField, fieldAssembler);
+          Schema newFieldSchema = setupNestedNamespace(field.schema(), nestedNamespace);
+          Schema.Field newField =
+              new Schema.Field(field.name(), newFieldSchema, field.doc(), field.defaultValue(), field.order());
+          appendField(newField, fieldAssembler);
           break;
         case ENUM:
           appendFieldWithNewNamespace(field, nestedNamespace, fieldAssembler);
@@ -623,12 +683,6 @@ class SchemaUtilities {
           Schema.Field newRecordFiled = new Schema.Field(field.name(), recordSchemaWithNestedNamespace, field.doc(),
               field.defaultValue(), field.order());
           appendField(newRecordFiled, fieldAssembler);
-          break;
-        case UNION:
-          Schema unionSchemaWithNestedNamespace = setupNestedNamespace(field.schema(), nestedNamespace);
-          Schema.Field newUnionField = new Schema.Field(field.name(), unionSchemaWithNestedNamespace, field.doc(),
-              field.defaultValue(), field.order());
-          appendField(newUnionField, fieldAssembler);
           break;
         default:
           throw new IllegalArgumentException("Unsupported Schema type: " + field.schema().getType().toString());
@@ -643,6 +697,7 @@ class SchemaUtilities {
     Preconditions.checkNotNull(namespace);
 
     switch (schema.getType()) {
+      case NULL:
       case BOOLEAN:
       case BYTES:
       case DOUBLE:
@@ -674,20 +729,22 @@ class SchemaUtilities {
         Schema recordSchema = setupNestedNamespaceForRecord(schema, namespace);
         return recordSchema;
       case UNION:
+        List<Schema> types = new ArrayList<>();
         if (isNullableType(schema)) {
           Schema otherType = getOtherTypeFromNullableType(schema);
           Schema otherTypeWithNestedNamespace = setupNestedNamespace(otherType, namespace);
           Schema nullSchema = Schema.create(Schema.Type.NULL);
-          List<Schema> types = new ArrayList<>();
           types.add(nullSchema);
           types.add(otherTypeWithNestedNamespace);
-          Schema unionSchema = Schema.createUnion(types);
-
-          return unionSchema;
         } else {
-          throw new IllegalArgumentException(
-              schema.toString(true) + " is unsupported UNION type. " + "Only nullable UNION is supported");
+          for (Schema type : schema.getTypes()) {
+            Schema typeWithNestNamespace = setupNestedNamespace(type, namespace);
+            types.add(typeWithNestNamespace);
+          }
         }
+        Schema unionSchema = Schema.createUnion(types);
+
+        return unionSchema;
       default:
         throw new IllegalArgumentException("Unsupported Schema type: " + schema.getType().toString());
     }
@@ -706,8 +763,7 @@ class SchemaUtilities {
   }
 
   private static Schema convertFieldSchemaToAvroSchema(@Nonnull final String recordName,
-      @Nonnull final String recordNamespace, @Nonnull final boolean mkFieldsOptional,
-      @Nonnull final List<FieldSchema> columns) {
+      @Nonnull final String recordNamespace, final boolean mkFieldsOptional, @Nonnull final List<FieldSchema> columns) {
     Preconditions.checkNotNull(recordName);
     Preconditions.checkNotNull(recordNamespace);
     Preconditions.checkNotNull(mkFieldsOptional);

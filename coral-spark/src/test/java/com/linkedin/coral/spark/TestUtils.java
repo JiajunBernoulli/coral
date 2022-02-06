@@ -1,13 +1,17 @@
 /**
- * Copyright 2018-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2018-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
 package com.linkedin.coral.spark;
 
+import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
+import java.util.UUID;
 
 import org.apache.calcite.rel.RelNode;
+import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.ql.CommandNeedRetryException;
@@ -16,12 +20,14 @@ import org.apache.hadoop.hive.ql.metadata.Hive;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.session.SessionState;
 
-import com.linkedin.coral.hive.hive2rel.HiveMetastoreClient;
-import com.linkedin.coral.hive.hive2rel.HiveMscAdapter;
+import com.linkedin.coral.common.HiveMetastoreClient;
+import com.linkedin.coral.common.HiveMscAdapter;
 import com.linkedin.coral.hive.hive2rel.HiveToRelConverter;
 
 
 public class TestUtils {
+
+  public static final String CORAL_SPARK_TEST_DIR = "coral.spark.test.dir";
 
   static HiveToRelConverter hiveToRelConverter;
 
@@ -36,12 +42,14 @@ public class TestUtils {
     }
   }
 
-  public static void initializeViews() throws HiveException, MetaException {
-    HiveConf conf = loadResourceHiveConf();
+  public static void initializeViews(HiveConf conf) throws HiveException, MetaException, IOException {
+    String testDir = conf.get(CORAL_SPARK_TEST_DIR);
+    System.out.println("Test Workspace: " + testDir);
+    FileUtils.deleteDirectory(new File(testDir));
     SessionState.start(conf);
     Driver driver = new Driver(conf);
     HiveMetastoreClient hiveMetastoreClient = new HiveMscAdapter(Hive.get(conf).getMSC());
-    hiveToRelConverter = HiveToRelConverter.create(hiveMetastoreClient);
+    hiveToRelConverter = new HiveToRelConverter(hiveMetastoreClient);
     run(driver, "CREATE TABLE IF NOT EXISTS foo(a int, b varchar(30), c double)");
     run(driver, "CREATE TABLE IF NOT EXISTS bar(x int, y double)");
     run(driver,
@@ -60,10 +68,11 @@ public class TestUtils {
         "CREATE FUNCTION default_foo_dali_udf5_UnsupportedUDF as 'com.linkedin.coral.hive.hive2rel.CoralTestUnsupportedUDF'");
     run(driver,
         "create function default_foo_lateral_udtf_CountOfRow as 'com.linkedin.coral.hive.hive2rel.CoralTestUDTF'");
+    run(driver,
+        "create function default_foo_duplicate_udf_LessThanHundred as 'com.linkedin.coral.hive.hive2rel.CoralTestUDF'");
 
     run(driver, String.join("\n", "", "CREATE VIEW IF NOT EXISTS foo_view", "AS", "SELECT b AS bcol, sum(c) AS sum_c",
         "FROM foo", "GROUP BY b"));
-    // [LIHADOOP-47172 test date literal in view definition
     run(driver, "DROP VIEW IF EXITS foo_v1");
     run(driver,
         String.join("\n", "", "CREATE VIEW IF NOT EXISTS foo_v1 ", "AS ",
@@ -193,6 +202,17 @@ public class TestUtils {
 
     run(driver,
         "CREATE TABLE IF NOT EXISTS union_table(foo uniontype<int, double, array<string>, struct<a:int,b:string>>)");
+
+    run(driver, "CREATE TABLE IF NOT EXISTS nested_union(a uniontype<int, struct<a:uniontype<int, double>, b:int>>)");
+
+    run(driver, "CREATE VIEW IF NOT EXISTS view_expand_array_index AS SELECT c[1] c1 FROM default.complex");
+
+    run(driver,
+        String.join("\n", "", "CREATE VIEW IF NOT EXISTS foo_duplicate_udf",
+            "tblproperties('functions' = 'LessThanHundred:com.linkedin.coral.hive.hive2rel.CoralTestUDF',",
+            "              'dependencies' = 'ivy://com.linkedin:udf:1.0')", "AS",
+            "SELECT default_foo_duplicate_udf_LessThanHundred(a), default_foo_duplicate_udf_LessThanHundred(a)",
+            "FROM foo"));
   }
 
   public static RelNode toRelNode(String db, String view) {
@@ -203,9 +223,11 @@ public class TestUtils {
     return hiveToRelConverter.convertSql(sql);
   }
 
-  private static HiveConf loadResourceHiveConf() {
+  public static HiveConf loadResourceHiveConf() {
     InputStream hiveConfStream = TestUtils.class.getClassLoader().getResourceAsStream("hive.xml");
     HiveConf hiveConf = new HiveConf();
+    hiveConf.set(CORAL_SPARK_TEST_DIR,
+        System.getProperty("java.io.tmpdir") + "/coral/spark/" + UUID.randomUUID().toString());
     hiveConf.addResource(hiveConfStream);
     hiveConf.set("mapreduce.framework.name", "local-spark");
     hiveConf.set("_hive.hdfs.session.path", "/tmp/coral/spark");

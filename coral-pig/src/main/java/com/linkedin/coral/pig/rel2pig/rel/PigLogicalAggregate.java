@@ -1,5 +1,5 @@
 /**
- * Copyright 2019-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2019-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -181,7 +181,7 @@ public class PigLogicalAggregate {
         aggregateCallArguments = bagIdentifier;
       }
 
-      // TODO(ralam): LIHADOOP-49630 - Create a function mapping from Hive/Transport/Built-in functions to Pig
+      // TODO Create a function mapping from Hive/Transport/Built-in functions to Pig
       aggregateStatements
           .add(String.format(AGGREGATE_CALL_TEMPLATE, aggregateCall.getAggregation().getName().toUpperCase(),
               aggregateCallArguments, outputFieldNames.get(groupBySetOffset + i)));

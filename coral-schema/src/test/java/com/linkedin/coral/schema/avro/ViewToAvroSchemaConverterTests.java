@@ -1,27 +1,40 @@
 /**
- * Copyright 2019-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2019-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
 package com.linkedin.coral.schema.avro;
 
+import java.io.File;
+import java.io.IOException;
+
 import org.apache.avro.Schema;
+import org.apache.commons.io.FileUtils;
+import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.testng.Assert;
+import org.testng.annotations.AfterTest;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
-import com.linkedin.coral.hive.hive2rel.HiveMetastoreClient;
+import com.linkedin.coral.common.HiveMetastoreClient;
 
 
 public class ViewToAvroSchemaConverterTests {
   private HiveMetastoreClient hiveMetastoreClient;
+  private HiveConf conf;
 
   @BeforeClass
-  public void beforeClass() throws HiveException, MetaException {
-    hiveMetastoreClient = TestUtils.setup();
+  public void beforeClass() throws HiveException, MetaException, IOException {
+    conf = TestUtils.getHiveConf();
+    hiveMetastoreClient = TestUtils.setup(conf);
     TestUtils.registerUdfs();
+  }
+
+  @AfterTest
+  public void afterClass() throws IOException {
+    FileUtils.deleteDirectory(new File(conf.get(TestUtils.CORAL_SCHEMA_TEST_DIR)));
   }
 
   @Test
@@ -112,6 +125,19 @@ public class ViewToAvroSchemaConverterTests {
     Schema actualSchema = viewToAvroSchemaConverter.toAvroSchema("default", "v");
 
     Assert.assertEquals(actualSchema.toString(true), TestUtils.loadSchema("testAggregateRename-expected.avsc"));
+  }
+
+  @Test
+  public void testMultipleAggregates() {
+    String viewSql = "CREATE VIEW v AS SELECT MAX(bc.Id) AS Max_Id_Col, MIN(bc.Id) AS Min_Id_Col, "
+        + "AVG(bc.Id) AS Avg_Id_Col, SUM(bc.Id) AS Sum_Id_Col FROM basecomplex bc GROUP BY bc.Array_Col";
+
+    TestUtils.executeCreateViewQuery("default", "v", viewSql);
+
+    ViewToAvroSchemaConverter viewToAvroSchemaConverter = ViewToAvroSchemaConverter.create(hiveMetastoreClient);
+    Schema actualSchema = viewToAvroSchemaConverter.toAvroSchema("default", "v");
+
+    Assert.assertEquals(actualSchema.toString(true), TestUtils.loadSchema("testMultipleAggregates-expected.avsc"));
   }
 
   @Test
@@ -405,7 +431,7 @@ public class ViewToAvroSchemaConverterTests {
     Assert.assertEquals(actualSchema.toString(true), TestUtils.loadSchema("testSelfJoin-expected.avsc"));
   }
 
-  // TODO: handle complex type (Array[Struct] in lateral view:  LIHADOOP-46695)
+  // TODO: handle complex type (Array[Struct] in lateral view)
   @Test(enabled = false)
   public void testLateralViewArrayWithComplexType() {
     String viewSql = "CREATE VIEW v AS " + "SELECT bl.Id AS Id_View_Col, bl.Array_Col_Struct AS Array_Struct_View_Col, "
@@ -423,8 +449,8 @@ public class ViewToAvroSchemaConverterTests {
 
   @Test
   public void testLateralViewMap() {
-    String viewSql = "CREATE VIEW v AS " + "SELECT bl.Id AS Id_View_Col, t.Col1, t.Col2 " + "FROM baselateralview bl "
-        + "LATERAL VIEW explode(bl.Map_Col_String) t as Col1, Col2";
+    String viewSql = "CREATE VIEW v AS " + "SELECT bl.Id AS Id_View_Col, t.col1, t.col2 " + "FROM baselateralview bl "
+        + "LATERAL VIEW explode(bl.Map_Col_String) t as col1, col2";
 
     TestUtils.executeCreateViewQuery("default", "v", viewSql);
 
@@ -493,6 +519,16 @@ public class ViewToAvroSchemaConverterTests {
     Schema actualSchema = viewToAvroSchemaConverter.toAvroSchema("default", "foo_dali_udf_nullability");
 
     Assert.assertEquals(actualSchema.toString(true), TestUtils.loadSchema("testNullabilityUdf-expected.avsc"));
+  }
+
+  @Test
+  public void testNullabliltyExtractUnionUDF() {
+    String sql = "select extract_union(unionCol) as c1 from basenestedunion";
+    ViewToAvroSchemaConverter viewToAvroSchemaConverter = ViewToAvroSchemaConverter.create(hiveMetastoreClient);
+
+    Schema actual = viewToAvroSchemaConverter.toAvroSchema(sql);
+
+    Assert.assertEquals(actual.toString(true), TestUtils.loadSchema("testNullabilityExtractUnionUDF-expected.avsc"));
   }
 
   @Test(enabled = false)
@@ -697,7 +733,8 @@ public class ViewToAvroSchemaConverterTests {
     ViewToAvroSchemaConverter viewToAvroSchemaConverter = ViewToAvroSchemaConverter.create(hiveMetastoreClient);
     Schema actualSchema = viewToAvroSchemaConverter.toAvroSchema("default", "v", false);
 
-    Assert.assertEquals(actualSchema.toString(true), TestUtils.loadSchema("testNullUnionNonNullField-expected.avsc"));
+    Assert.assertEquals(actualSchema.toString(true),
+        TestUtils.loadSchema("testNullUnionNotNullableField-expected.avsc"));
   }
 
   @Test
@@ -709,7 +746,8 @@ public class ViewToAvroSchemaConverterTests {
     ViewToAvroSchemaConverter viewToAvroSchemaConverter = ViewToAvroSchemaConverter.create(hiveMetastoreClient);
     Schema actualSchema = viewToAvroSchemaConverter.toAvroSchema("default", "v", false);
 
-    Assert.assertEquals(actualSchema.toString(true), TestUtils.loadSchema("testNullUnionNonNullField-expected.avsc"));
+    Assert.assertEquals(actualSchema.toString(true),
+        TestUtils.loadSchema("testNotNullableFieldUnionNull-expected.avsc"));
   }
 
   @Test
@@ -722,7 +760,7 @@ public class ViewToAvroSchemaConverterTests {
     ViewToAvroSchemaConverter viewToAvroSchemaConverter = ViewToAvroSchemaConverter.create(hiveMetastoreClient);
     Schema actualSchema = viewToAvroSchemaConverter.toAvroSchema("default", "v", false);
 
-    Assert.assertEquals(actualSchema.toString(true), TestUtils.loadSchema("testNullUnionNonNullField-expected.avsc"));
+    Assert.assertEquals(actualSchema.toString(true), TestUtils.loadSchema("testNullUnionNullableField-expected.avsc"));
   }
 
   @Test
@@ -735,7 +773,7 @@ public class ViewToAvroSchemaConverterTests {
     ViewToAvroSchemaConverter viewToAvroSchemaConverter = ViewToAvroSchemaConverter.create(hiveMetastoreClient);
     Schema actualSchema = viewToAvroSchemaConverter.toAvroSchema("default", "v", false);
 
-    Assert.assertEquals(actualSchema.toString(true), TestUtils.loadSchema("testNullUnionNonNullField-expected.avsc"));
+    Assert.assertEquals(actualSchema.toString(true), TestUtils.loadSchema("testNullableFieldUnionNull-expected.avsc"));
   }
 
   @Test
@@ -748,7 +786,8 @@ public class ViewToAvroSchemaConverterTests {
     ViewToAvroSchemaConverter viewToAvroSchemaConverter = ViewToAvroSchemaConverter.create(hiveMetastoreClient);
     Schema actualSchema = viewToAvroSchemaConverter.toAvroSchema("default", "v", false);
 
-    Assert.assertEquals(actualSchema.toString(true), TestUtils.loadSchema("testNullUnionNonNullField-expected.avsc"));
+    Assert.assertEquals(actualSchema.toString(true),
+        TestUtils.loadSchema("testNotNullableFieldUnionNullableField-expected.avsc"));
   }
 
   @Test
@@ -761,7 +800,8 @@ public class ViewToAvroSchemaConverterTests {
     ViewToAvroSchemaConverter viewToAvroSchemaConverter = ViewToAvroSchemaConverter.create(hiveMetastoreClient);
     Schema actualSchema = viewToAvroSchemaConverter.toAvroSchema("default", "v", false);
 
-    Assert.assertEquals(actualSchema.toString(true), TestUtils.loadSchema("testNullUnionNonNullField-expected.avsc"));
+    Assert.assertEquals(actualSchema.toString(true),
+        TestUtils.loadSchema("testNullableFieldUnionNotNullableField-expected.avsc"));
   }
 
   @Test
@@ -871,5 +911,45 @@ public class ViewToAvroSchemaConverterTests {
     Assert.assertEquals(actualSchema.toString(true),
         TestUtils.loadSchema("docTestResources/testMultipleLateralViewDifferentArrayType-expected-with-doc.avsc"));
   }
+
+  @Test
+  public void testDecimalType() {
+    String viewSql = "CREATE VIEW v AS SELECT * FROM basedecimal";
+    TestUtils.executeCreateViewQuery("default", "v", viewSql);
+
+    ViewToAvroSchemaConverter viewToAvroSchemaConverter = ViewToAvroSchemaConverter.create(hiveMetastoreClient);
+    Schema actualSchema = viewToAvroSchemaConverter.toAvroSchema("default", "v");
+
+    Assert.assertEquals(actualSchema.toString(true), TestUtils.loadSchema("testDecimalType-expected.avsc"));
+  }
+
+  @Test
+  public void testComplexUnionType() {
+    String viewSql = "CREATE VIEW v AS SELECT * FROM basecomplexuniontype";
+    TestUtils.executeCreateViewQuery("default", "v", viewSql);
+
+    ViewToAvroSchemaConverter viewToAvroSchemaConverter = ViewToAvroSchemaConverter.create(hiveMetastoreClient);
+    Schema actualSchema = viewToAvroSchemaConverter.toAvroSchema("default", "v");
+
+    Assert.assertEquals(actualSchema.toString(true), TestUtils.loadSchema("testComplexUnionType-expected.avsc"));
+  }
+
+  @Test
+  public void testProjectUdfReturnedStruct() {
+    String viewSql = "CREATE VIEW foo_udf_return_struct "
+        + "tblproperties('functions' = 'FuncIsEven:com.linkedin.coral.hive.hive2rel.CoralTestUDFReturnStruct') " + "AS "
+        + "SELECT bc.Id AS Id_View_Col, default_foo_udf_return_struct_FuncIsEven(bc.Id) AS Id_View_FuncIsEven_Col,  "
+        + "default_foo_udf_return_struct_FuncIsEven(bc.Id).isEven AS View_IsEven_Col, "
+        + "default_foo_udf_return_struct_FuncIsEven(bc.Id).number AS View_Number_Col " + "FROM basecomplex bc";
+
+    TestUtils.executeCreateViewQuery("default", "foo_udf_return_struct", viewSql);
+
+    ViewToAvroSchemaConverter viewToAvroSchemaConverter = ViewToAvroSchemaConverter.create(hiveMetastoreClient);
+    Schema actualSchema = viewToAvroSchemaConverter.toAvroSchema("default", "foo_udf_return_struct");
+
+    Assert.assertEquals(actualSchema.toString(true),
+        TestUtils.loadSchema("testProjectUdfReturnedStruct-expected.avsc"));
+  }
+
   // TODO: add more unit tests
 }

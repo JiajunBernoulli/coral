@@ -1,5 +1,5 @@
 /**
- * Copyright 2020-2021 LinkedIn Corporation. All rights reserved.
+ * Copyright 2020-2022 LinkedIn Corporation. All rights reserved.
  * Licensed under the BSD-2 Clause license.
  * See LICENSE in the project root for license information.
  */
@@ -35,6 +35,7 @@ import org.slf4j.LoggerFactory;
 public class ArtifactsResolver {
   private static final Logger LOG = LoggerFactory.getLogger(ArtifactsResolver.class);
   private static final String IVY_SETTINGS_LOCATION = "IVY_SETTINGS_LOCATION";
+  private static final String IVY_CACHE_DIR = "IVY_CACHE_DIR";
   private static final String IVY_SETTINGS_FILE_NAME = "ivy.settings.xml";
   private static final String IVY_LOG_LEVEL = "IVY_LOG_LEVEL";
   private final Ivy _ivyInstance;
@@ -58,7 +59,7 @@ public class ArtifactsResolver {
    * "group:name:version"
    */
   public List<File> resolve(String dependencySpecString) {
-    List<File> uris = new ArrayList<File>();
+    List<File> uris = new ArrayList<>();
     try {
       _ivyInstance.pushContext();
       final ResolveReport report = getDependencies(createDependencySpec(dependencySpecString));
@@ -83,9 +84,9 @@ public class ArtifactsResolver {
     if (withParameters.length == 2) {
       for (String parameter : withParameters[1].split("&")) {
         String[] parameterKeyValue = parameter.trim().split("=");
-        if (parameterKeyValue[0].toLowerCase().equals("classifier")) {
+        if (parameterKeyValue[0].equalsIgnoreCase("classifier")) {
           dependencySpec.classifier = parameterKeyValue[1];
-        } else if (parameterKeyValue[0].toLowerCase().equals("transitive")) {
+        } else if (parameterKeyValue[0].equalsIgnoreCase("transitive")) {
           dependencySpec.transitive = Boolean.parseBoolean(parameterKeyValue[1]);
         }
       }
@@ -123,6 +124,7 @@ public class ArtifactsResolver {
     final ResolveOptions resolveOptions = new ResolveOptions().setConfs(new String[] { "default" })
         .setOutputReport(true).setValidate(true).setTransitive(dependencySpec.transitive);
     resolveOptions.setLog(LogOptions.LOG_QUIET);
+    resolveOptions.setOutputReport(false);
     try {
       final ResolveReport report = _ivyInstance.resolve(md, resolveOptions);
       if (report.hasError()) {
@@ -146,10 +148,12 @@ public class ArtifactsResolver {
         LOG.info("Reading Ivy settings from: " + settingsUrl);
         settings.load(settingsUrl);
       }
-    } catch (ParseException e) {
+    } catch (ParseException | IOException e) {
       throw new RuntimeException("Unable to configure Ivy", e);
-    } catch (IOException e) {
-      throw new RuntimeException("Unable to configure Ivy", e);
+    }
+    String ivyCacheDir = System.getenv(IVY_CACHE_DIR);
+    if (ivyCacheDir != null) {
+      settings.setDefaultCache(new File(ivyCacheDir));
     }
     setupCacheDir(settings.getDefaultCache());
     settings.setVariable("ivy.default.configuration.m2compatible", "true");
